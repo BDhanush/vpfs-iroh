@@ -49,37 +49,43 @@ struct Opt {
     name: String
 }
 
+/// Send a message to a TcpStream
 fn send_message_tcp <T: Serialize>(stream: &mut TcpStream, message: T) {
     serde_bare::to_writer(stream, &message).unwrap();
 }
 
+/// Receive a message from a TcpStream
 fn receive_message_tcp <T: DeserializeOwned>(stream: &mut TcpStream) -> Result<T, serde_bare::error::Error> {
     serde_bare::from_reader(stream)
 }
 
+/// Handle client Find request
 async fn handle_client_find(stream: &mut TcpStream, file: &str, state: &Arc<DaemonState>) {
     send_message_tcp(stream, ClientResponse::Find(recursive_find(file, state).await));
 }
 
+/// Handle client Place request
 async fn handle_client_place(stream: &mut TcpStream, file: &str, node_name: String, state: &Arc<DaemonState>) {
     send_message_tcp(stream, ClientResponse::Place(place_file(file, &node_name, false, state).await));
 }
 
+/// Handle client Mkdir request
 async fn handle_client_mkdir(stream: &mut TcpStream, directory: &str, node_name: String, state: &Arc<DaemonState>) {
     send_message_tcp(stream, ClientResponse::Mkdir(place_file(directory, &node_name, true, state).await));
 }
 
+/// Handle client Read request
+/// <br>
 async fn handle_client_read(stream: &mut TcpStream, location: Location, state: &Arc<DaemonState>) {
+    // if file is local, read locally, else read remotely and send response back through stream
     if location.node_name == state.local.name {
         if let Ok(buf) = read_local(&location.uri, &state.file_access_lock) {
             send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));                    
             stream.write_all(&buf);
-        }
-        else {
+        } else {
             send_message_tcp(stream, ClientResponse::Read(Err(VPFSError::DoesNotExist)));
         }
-    }
-    else  {
+    } else  {
         match read_remote(&location, state).await {
             Ok(buf) => {
                 send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));                    
@@ -92,18 +98,17 @@ async fn handle_client_read(stream: &mut TcpStream, location: Location, state: &
     }
 }
 
+/// Handle client Write request
 async fn handle_client_write(stream: &mut TcpStream, location: Location, file_len: usize, state: &Arc<DaemonState>) {
     if location.node_name == state.local.name {
         let mut buf = vec![0u8;file_len];
         stream.read_exact(buf.as_mut()).unwrap();
         if write_local(&location.uri, &buf, &state.file_access_lock).is_ok() {
             send_message_tcp(stream, ClientResponse::Write(Ok(file_len)));
-        }
-        else {
+        } else {
             send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::DoesNotExist)));
         }
-    } //TODO complex
-    else if let Some(file_owner_connection) = stream_for(&location.node_name, &state).await {
+    } else if let Some(file_owner_connection) = stream_for(&location.node_name, &state).await {
         let mut file_owner_connection = file_owner_connection.lock().unwrap();
         match file_owner_connection.open_bi().await {
             Ok((mut send, mut recv)) => {
@@ -120,12 +125,12 @@ async fn handle_client_write(stream: &mut TcpStream, location: Location, file_le
             }
             Err(e) => eprintln!("✗ Error opening bi-directional stream: {}", e),
         }
-    }
-    else {
+    } else {
         send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::NotAccessible)));
     }
 }
 
+/// Handle requests from connected client program
 fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: &Handle) {
     rt_handle.block_on(async {
         loop {
@@ -154,6 +159,7 @@ fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: &Han
     });
 }
 
+/// Handle incoming connection from client program
 fn handle_connection(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: Handle) {
     match receive_message_tcp(&mut stream) {
         Ok(Hello::ClientHello) => {
@@ -166,7 +172,7 @@ fn handle_connection(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: 
     }
 }
 
-// Create a TCP listener to accept incoming connections from programs
+/// Start TCP server to accept connections from client programs
 fn start_server(address: &str, state: Arc<DaemonState>, rt_handle: Handle) {
     let listener = TcpListener::bind(address).unwrap();
     println!("Listening for client connections");
@@ -191,6 +197,7 @@ fn start_server(address: &str, state: Arc<DaemonState>, rt_handle: Handle) {
 async fn main() -> Result<()> {
     let opt = Opt::parse();
     
+    // initialize iroh endpoint and wait for it to be online
     let address = format!("0.0.0.0:{}", opt.port);
     // let mut config = TransportConfig::default();
     // config.max_idle_timeout(None);
@@ -205,6 +212,7 @@ async fn main() -> Result<()> {
     let endpoint_id = endpoint.id();
     println!("Endpoint Id: {endpoint_id}");
 
+    // initialize daemon state
     let mut state = DaemonState {
         endpoint: endpoint.clone(),
         root: if let Some(root_id) = opt.root_id {
@@ -227,12 +235,13 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(state);
 
+    // Initialize protocol router
     let router = Router::builder(endpoint)
         .accept(VPFSProtocol::ALPN, protocol::VPFSProtocol{ state:state.clone() })
         .spawn();
 
-
     if opt.root_id.is_some() {
+        // root_id is provided, connect to root node, send hello and populate known hosts
         println!("Running as non root node");
 
         let remote_id = opt.root_id.unwrap();
@@ -272,6 +281,8 @@ async fn main() -> Result<()> {
             }
         }
     } else {
+        // current node is the root node
+        // initialize known hosts map, create root directory if it does not exist, and add self links
         println!("Running as root node");
 
         state.known_hosts.lock().unwrap().replace(HashMap::new());

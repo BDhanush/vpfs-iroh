@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use iroh::PublicKey;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 #[derive(Serialize,Deserialize,Clone,Hash,Debug,PartialEq,Eq)]
@@ -28,6 +28,7 @@ pub struct CacheEntry {
     pub uri: String
 }
 
+/// Hello messages
 #[derive(Serialize,Deserialize)]
 pub enum Hello {
     ClientHello,
@@ -35,11 +36,14 @@ pub enum Hello {
     RootHello(VPFSNode),
 }
 
+/// Responses to Hello messages
 #[derive(Serialize,Deserialize)]
 pub enum HelloResponse {
-    ClientHello(String), // node name 
+    /// node_name
+    ClientHello(String),
     DaemonHello,
-    RootHello(VPFSNode, HashMap<String, PublicKey>), // node, knownhosts
+    /// node, knownhosts
+    RootHello(VPFSNode, HashMap<String, PublicKey>),
 }
 
 #[derive(Serialize,Deserialize,Debug,Eq,PartialEq)]
@@ -55,6 +59,7 @@ pub enum VPFSError {
     Other(String),
 }
 
+/// Requests to a daemon from a daemon
 #[derive(Serialize,Deserialize)]
 pub enum DaemonRequest {
     Place,
@@ -62,34 +67,44 @@ pub enum DaemonRequest {
     Write(String),
     Remove(String),
     AppendDirectoryEntry(String, DirectoryEntry),
-    AddressFor(String) // node name
+    /// to request for endpoint_id of node given node_name
+    AddressFor(String)
 }
 
+/// Responses to a daemon from a daemon for requests
 #[derive(Serialize,Deserialize)]
 pub enum DaemonResponse {
     Place(String),
     Read(Result<(), VPFSError>),
+    /// usize is number of bytes written
     Write(Result<usize, VPFSError>),
     Remove(Result<(), VPFSError>),
     AppendDirectoryEntry(Result<(), VPFSError>),
+    /// `endpoint_id` for node given name
     AddressFor(Option<PublicKey>)
 }
 
-
+/// Requests from client to daemon
 #[derive(Serialize,Deserialize)]
 pub enum ClientRequest {
     Find(String),
-    Place(String, String), // parent dir uri, name
-    Mkdir(String, String), // parent dir uri, name
+    /// parent dir uri, name
+    Place(String, String),
+    /// parent dir uri, name
+    Mkdir(String, String), 
     Read(Location),
+    /// `Location`, number of bytes to write
     Write(Location, usize),
 }
 
+/// Response to client requests
 #[derive(Serialize,Deserialize)]
 pub enum ClientResponse {
     Find(Result<DirectoryEntry, VPFSError>),
     Place(Result<Location, VPFSError>),
     Mkdir(Result<Location, VPFSError>),
+    /// usize is number of bytes read
     Read(Result<usize, VPFSError>),
+    /// usize is number of bytes written
     Write(Result<usize, VPFSError>),
 }

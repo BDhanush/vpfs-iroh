@@ -13,6 +13,7 @@ use crate::state::DaemonState;
 
 use crate::remote_communication::*;
 
+/// Create ./files and go to it. Panic if it cannot be created or cd'ed into.
 pub fn setup_files_dir() {
     if let Err(err) = fs::create_dir("./files") {
         if err.kind() != std::io::ErrorKind::AlreadyExists {
@@ -55,6 +56,8 @@ pub fn add_cache_entry(location: &Location, data: &[u8], cache: &mut MutexGuard<
     }
 }
 
+
+/// Restore cache from ./cache file if it exists
 pub fn restore_cache(state: &mut DaemonState) {
     if let Ok(cache_file) = fs::File::open("cache") {
         let mut cache = state.cache.lock().unwrap();

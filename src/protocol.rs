@@ -19,6 +19,7 @@ pub struct VPFSProtocol {
 impl VPFSProtocol {
     pub const ALPN: &'static [u8] = b"uic/vpfs";
 
+    /// Handle daemon requests
     async fn handle_daemon(&self, mut conn:Connection) {
         let remote_id = conn.remote_id();
 
@@ -97,6 +98,7 @@ impl VPFSProtocol {
         }
     }
 
+    /// Handle an incoming iroh connection
     pub async fn handle_connection(&self, mut conn: Connection) {
         let remote_id = conn.remote_id();
         println!("Accepted connection from {remote_id}");
@@ -133,7 +135,6 @@ impl VPFSProtocol {
 
 impl ProtocolHandler for VPFSProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), iroh::protocol::AcceptError> {
-        //handle connection
         self.handle_connection(conn).await;
         Ok(())
     }

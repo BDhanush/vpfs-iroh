@@ -183,16 +183,44 @@ impl Command {
     }
 }
 
+fn normalize_path(path: String) -> String {
+    let mut stack: Vec<String> = Vec::new();
+
+    for part in path.split('/') {
+        match part {
+            "" | "." => {
+                continue;
+            }
+            ".." => {
+                stack.pop();
+            }
+            _ => {
+                stack.push(part.to_string());
+            }
+        }
+    }
+
+    let mut result = String::new();
+    if path.starts_with('/') {
+        result.push('/');
+    }
+    result.push_str(&stack.join("/"));
+
+    result
+}
+
 fn file_name_to_full_path(cwd: &str, file_name: &str) -> String {
-    if file_name.starts_with('/') {
-        file_name[1..].to_string()
-    }
-    else if cwd != ""{
-        format!("{}/{}", cwd, file_name)
-    }
-    else {
-        file_name.to_string()
-    }
+    let full_path = if file_name.starts_with('/') {
+            file_name[1..].to_string()
+        }
+        else if cwd != ""{
+            format!("{}/{}", cwd, file_name)
+        }
+        else {
+            file_name.to_string()
+        };
+    normalize_path(full_path)
+
 }
 
 fn parse_piped_command(command_string: &str, cwd: &str) -> Option<PipeableCommand> {
@@ -365,6 +393,18 @@ fn run_ls(command: Command, vpfs: Arc<VPFS>, cwd: &str) {
     }
 }
 
+fn run_cat(vpfs: Arc<VPFS>, command: &Command, cwd: &str) {
+    for file_name in &command.args {
+        let full_path = file_name_to_full_path(cwd, file_name);
+        match vpfs.fetch(&full_path) {
+            Ok(data) => {
+                io::stdout().write_all(&data).unwrap();
+            }
+            Err(e) => println!("vpfs cat error {}: {:?}", file_name, e),
+        }
+    }
+}
+
 fn run_nonpiped_command(command: Command, vpfs: Arc<VPFS>, cwd: &mut String) {
     let program = command.program.clone();
     match program.as_str() {
@@ -374,6 +414,7 @@ fn run_nonpiped_command(command: Command, vpfs: Arc<VPFS>, cwd: &mut String) {
         "pwd" => println!("/{}", cwd),        
         "mkdir" => run_mkdir(command, vpfs, cwd),
         "ls" => run_ls(command, vpfs, cwd),
+        // "cat" => run_cat(vpfs.clone(), &command, cwd),
         // Normal binaries
         _ => {
             let fork_ret = command.spawn(vpfs);

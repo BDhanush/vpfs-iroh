@@ -21,3 +21,7 @@ path="src/daemon.rs"
 [[bin]]
 name="sh"
 path="src/applications/sh.rs"
+
+[[bin]]
+name="cat"
+path="src/applications/cat.rs"
