@@ -2,8 +2,9 @@ use iroh::{Endpoint, PublicKey};
 use iroh::endpoint::Connection;
 use lru::LruCache;
 
+use std::fs::File;
 use std::sync::{Arc, Mutex, RwLock};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::messages::{VPFSNode,Location,CacheEntry};
 
@@ -17,5 +18,6 @@ pub(crate) struct DaemonState {
     pub cache: Mutex<LruCache<Location, CacheEntry>>,
     pub max_cache_size: usize,
     pub used_cache_bytes: RwLock<usize>,
-    pub file_access_lock: RwLock<()>
+    pub file_access_lock: RwLock<()>,
+    pub open_files: Mutex<HashSet<i32>>,
 }

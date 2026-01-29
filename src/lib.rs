@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpStream};
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,9 @@ use messages::*;
 
 pub struct VPFS {
     pub local: String, // name
-    connection: Mutex<TcpStream>
+    connection: Mutex<TcpStream>,
+    client_fd_to_remote: Mutex<BTreeMap<i32, i32>>,
+    open_files: Mutex<BTreeMap<i32, Location>>,
 }
 
 impl VPFS {
@@ -22,6 +24,8 @@ impl VPFS {
             let vpfs = VPFS { 
             local: local_String,
             connection: Mutex::new(stream),
+            client_fd_to_remote: Mutex::new(BTreeMap::new()),
+            open_files: Mutex::new(BTreeMap::new()),
             };
             Ok(vpfs)
         }
@@ -118,6 +122,43 @@ impl VPFS {
             Err(error) => return Err(error),
         };
         self.write(location.clone(), buf)
+    }
+
+    fn add_to_open_files(&self, daemon_fd: i32, location: Location) {
+        let mut open_files = self.open_files.lock().unwrap();
+        let mut client_fd_to_remote = self.client_fd_to_remote.lock().unwrap();
+
+        let mut new_fd = 3; // 0,1,2 are stdin, stdout, stderr
+        for (&fd,_) in client_fd_to_remote.range(3..) {
+            if fd == new_fd {
+                new_fd += 1;
+            } else {
+                break;
+            }
+        }
+        client_fd_to_remote.insert(new_fd, daemon_fd);
+        open_files.insert(new_fd, location);
+    }
+
+    pub fn open(&self, name: &str) -> Result<i32, VPFSError> {
+        let dir_entry = self.find(name)?;
+        let location = dir_entry.location.clone();
+        if let ClientResponse::Open(open_result) = self.send_request(ClientRequest::Open(location.clone())) {
+            if let Ok(fd) = open_result {
+                self.add_to_open_files(fd, location);
+            }
+            open_result
+        } else {
+            panic!("Bad response to open")
+        }
+    }
+    
+    pub fn read_fd(&self, fd:i32, len:usize) -> Result<Vec<u8>, VPFSError> {
+        Ok(vec![]) // TODO
+    }
+
+    pub fn read_line_fd(&self, fd:i32) -> Result<Vec<u8>, VPFSError> {
+        Ok(vec![]) // TODO
     }
 }
 

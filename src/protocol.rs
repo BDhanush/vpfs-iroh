@@ -29,6 +29,16 @@ impl VPFSProtocol {
                     let response = DaemonResponse::Place(create_file_with_random_uri());
                     send_message(&mut send, response).await;
                 }
+                Ok(DaemonRequest::Open(uri)) => {
+                    match open_file_local(&uri, &self.state.open_files) {
+                        Ok(daemon_fd) => {
+                            send_message(&mut send, DaemonResponse::Open(Ok(daemon_fd))).await;
+                        }
+                        Err(_) => {
+                            send_message(&mut send, DaemonResponse::Open(Err(VPFSError::DoesNotExist))).await;
+                        }
+                    }
+                }
                 Ok(DaemonRequest::Read( uri, last_modified )) => {
                     let should_send = {
                         if let Some(remote_last_modified) = last_modified {

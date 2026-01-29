@@ -6,13 +6,14 @@ use lru::LruCache;
 use tokio::runtime::Handle;
 use anyhow::Result;
 
+use std::hash::Hash;
 use std::thread;
 use std::net::{TcpListener, TcpStream};
 use std::fs;
 use std::io;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, RwLock};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod protocol;
 use crate::protocol::VPFSProtocol;
@@ -72,6 +73,10 @@ async fn handle_client_place(stream: &mut TcpStream, file: &str, node_name: Stri
 /// Handle client Mkdir request
 async fn handle_client_mkdir(stream: &mut TcpStream, directory: &str, node_name: String, state: &Arc<DaemonState>) {
     send_message_tcp(stream, ClientResponse::Mkdir(place_file(directory, &node_name, true, state).await));
+}
+
+async fn handle_client_open(stream: &mut TcpStream, location: Location, state: &Arc<DaemonState>) {
+    send_message_tcp(stream, ClientResponse::Open(open_file(location, state).await));    
 }
 
 /// Handle client Read request
@@ -137,12 +142,15 @@ fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: &Han
             match receive_message_tcp(&mut stream) {
                 Ok(ClientRequest::Find(file)) => {
                     handle_client_find(&mut stream, &file, &state).await;
-                },
+                }
                 Ok(ClientRequest::Place(file, node_name )) => {
                     handle_client_place(&mut stream, &file, node_name,  &state).await;
                 }
                 Ok(ClientRequest::Mkdir(directory, node_name )) => {
                     handle_client_mkdir(&mut stream, &directory, node_name, &state).await;
+                }
+                Ok(ClientRequest::Open(location)) => {
+                    handle_client_open(&mut stream, location, &state).await;
                 }
                 Ok(ClientRequest::Read(location)) => {
                     handle_client_read(&mut stream, location, &state).await;
@@ -226,7 +234,8 @@ async fn main() -> Result<()> {
         cache: Mutex::new(LruCache::unbounded()),
         max_cache_size: opt.cache_size,
         used_cache_bytes: RwLock::new(0),
-        file_access_lock: RwLock::new(())
+        file_access_lock: RwLock::new(()),
+        open_files: Mutex::new(HashSet::new())
     };
     
     setup_files_dir();

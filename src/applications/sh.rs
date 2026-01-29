@@ -414,7 +414,7 @@ fn run_nonpiped_command(command: Command, vpfs: Arc<VPFS>, cwd: &mut String) {
         "pwd" => println!("/{}", cwd),        
         "mkdir" => run_mkdir(command, vpfs, cwd),
         "ls" => run_ls(command, vpfs, cwd),
-        // "cat" => run_cat(vpfs.clone(), &command, cwd),
+        "cat" => run_cat(vpfs.clone(), &command, cwd),
         // Normal binaries
         _ => {
             let fork_ret = command.spawn(vpfs);

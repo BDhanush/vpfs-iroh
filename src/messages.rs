@@ -63,6 +63,7 @@ pub enum VPFSError {
 #[derive(Serialize,Deserialize)]
 pub enum DaemonRequest {
     Place,
+    Open(String),
     Read(String, Option<SystemTime>),
     Write(String),
     Remove(String),
@@ -75,6 +76,7 @@ pub enum DaemonRequest {
 #[derive(Serialize,Deserialize)]
 pub enum DaemonResponse {
     Place(String),
+    Open(Result<i32, VPFSError>),
     Read(Result<(), VPFSError>),
     /// usize is number of bytes written
     Write(Result<usize, VPFSError>),
@@ -92,6 +94,7 @@ pub enum ClientRequest {
     Place(String, String),
     /// parent dir uri, name
     Mkdir(String, String), 
+    Open(Location),
     Read(Location),
     /// `Location`, number of bytes to write
     Write(Location, usize),
@@ -103,6 +106,7 @@ pub enum ClientResponse {
     Find(Result<DirectoryEntry, VPFSError>),
     Place(Result<Location, VPFSError>),
     Mkdir(Result<Location, VPFSError>),
+    Open(Result<i32,VPFSError>),
     /// usize is number of bytes read
     Read(Result<usize, VPFSError>),
     /// usize is number of bytes written

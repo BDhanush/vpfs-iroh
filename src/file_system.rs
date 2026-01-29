@@ -1,5 +1,8 @@
+use std::collections::{BTreeMap, HashSet};
+use std::fs::File;
+use std::os::fd::IntoRawFd;
 use std::{fs, io::Read};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use std::io::{self, BufReader};
 use std::sync::Arc;
 use rand::Rng;
@@ -368,5 +371,54 @@ pub async fn recursive_find(file: &str, state: &Arc<DaemonState>) -> Result<Dire
     }
     else {
         Err(VPFSError::NotAccessible)
+    }
+}
+
+pub fn open_file_local(uri: &str, open_files: &Mutex<HashSet<i32>>) -> io::Result<i32> {
+    // fs_lock.read().unwrap();
+    let file = File::open(uri);
+    match file {
+        Ok(file) => {
+            let mut open_files = open_files.lock().unwrap();
+            let fd = file.into_raw_fd();
+            open_files.insert(fd);
+            Ok(fd)
+        },
+        Err(e) => Err(e),
+    }
+}
+
+pub async fn open_file(location: Location, state: &Arc<DaemonState>) -> Result<i32, VPFSError> {
+    if location.node_name == state.local.name {
+        if let Ok(fd) = open_file_local(&location.uri, &state.open_files) {
+            return Ok(fd);
+        }
+        return Err(VPFSError::DoesNotExist);
+    }
+    let file_owner_connection = stream_for(&location.node_name, state).await;
+    if file_owner_connection.is_none() {
+        return Err(VPFSError::NotAccessible);
+    }
+    let file_owner_connection = file_owner_connection.unwrap();
+    let mut file_owner_connection = file_owner_connection.lock().unwrap();
+    match file_owner_connection.open_bi().await {
+        Ok((mut send, mut recv)) => {
+            send_message(&mut send, DaemonRequest::Open(location.uri.clone())).await;
+            
+            match receive_message(&mut recv).await {
+                Ok(DaemonResponse::Open(fd_result)) => {
+                    return fd_result;
+                },
+                Ok(_) => panic!("Bad response"),
+                Err(_) => {
+                    todo!("Check if error came from bad response, or from connection closing")
+                }
+            }                
+        }
+        Err(e) => {
+            eprintln!("✗ Error opening bi-directional stream: {}", e);
+            return Err(VPFSError::NotAccessible);
+        }
+        
     }
 }
