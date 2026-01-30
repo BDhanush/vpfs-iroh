@@ -56,6 +56,7 @@ pub enum VPFSError {
     NotAccessible, // We can not access the node need to complete request
     NotADirectory,
     AlreadyExists(DirectoryEntry),
+    FileNotOpen,
     Other(String),
 }
 
@@ -65,11 +66,14 @@ pub enum DaemonRequest {
     Place,
     Open(String),
     Read(String, Option<SystemTime>),
+    ReadFd(i32, usize),
+    ReadLineFd(i32),
+    Close(String, i32),
     Write(String),
     Remove(String),
     AppendDirectoryEntry(String, DirectoryEntry),
     /// to request for endpoint_id of node given node_name
-    AddressFor(String)
+    AddressFor(String),
 }
 
 /// Responses to a daemon from a daemon for requests
@@ -78,6 +82,9 @@ pub enum DaemonResponse {
     Place(String),
     Open(Result<i32, VPFSError>),
     Read(Result<(), VPFSError>),
+    ReadFd(Result<(), VPFSError>),
+    ReadLineFd(Result<(), VPFSError>),
+    Close(Result<(), VPFSError>),
     /// usize is number of bytes written
     Write(Result<usize, VPFSError>),
     Remove(Result<(), VPFSError>),
@@ -95,6 +102,9 @@ pub enum ClientRequest {
     /// parent dir uri, name
     Mkdir(String, String), 
     Open(Location),
+    ReadFd(Location, i32, usize),
+    ReadLineFd(Location, i32),
+    Close(String, i32),
     Read(Location),
     /// `Location`, number of bytes to write
     Write(Location, usize),
@@ -107,6 +117,9 @@ pub enum ClientResponse {
     Place(Result<Location, VPFSError>),
     Mkdir(Result<Location, VPFSError>),
     Open(Result<i32,VPFSError>),
+    ReadFd(Result<usize, VPFSError>),
+    ReadLineFd(Result<usize, VPFSError>),
+    Close(Result<(), VPFSError>),
     /// usize is number of bytes read
     Read(Result<usize, VPFSError>),
     /// usize is number of bytes written

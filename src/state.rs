@@ -19,5 +19,5 @@ pub(crate) struct DaemonState {
     pub max_cache_size: usize,
     pub used_cache_bytes: RwLock<usize>,
     pub file_access_lock: RwLock<()>,
-    pub open_files: Mutex<HashSet<i32>>,
+    pub open_files: Mutex<HashMap<i32, File>>,
 }

@@ -75,7 +75,7 @@ async fn handle_client_mkdir(stream: &mut TcpStream, directory: &str, node_name:
     send_message_tcp(stream, ClientResponse::Mkdir(place_file(directory, &node_name, true, state).await));
 }
 
-async fn handle_client_open(stream: &mut TcpStream, location: Location, state: &Arc<DaemonState>) {
+async fn handle_client_open_file(stream: &mut TcpStream, location: Location, state: &Arc<DaemonState>) {
     send_message_tcp(stream, ClientResponse::Open(open_file(location, state).await));    
 }
 
@@ -101,6 +101,34 @@ async fn handle_client_read(stream: &mut TcpStream, location: Location, state: &
             }
         }
     }
+}
+
+async fn handle_client_read_fd(stream: &mut TcpStream, location: Location, fd: i32, len: usize, state: &Arc<DaemonState>) {
+    match read_fd(&location, fd, len, state).await {
+        Ok(buf) => {
+            send_message_tcp(stream, ClientResponse::ReadFd(Ok(buf.len())));                    
+            stream.write_all(&buf);
+        }
+        Err(error) => {
+            send_message_tcp(stream, ClientResponse::ReadFd(Err(error)));
+        }
+    }
+}
+
+async fn handle_client_read_line_fd(stream: &mut TcpStream, location: Location, fd: i32, state: &Arc<DaemonState>) {
+    match read_line_fd(&location, fd, state).await {
+        Ok(buf) => {
+            send_message_tcp(stream, ClientResponse::ReadLineFd(Ok(buf.len())));                    
+            stream.write_all(&buf);
+        }
+        Err(error) => {
+            send_message_tcp(stream, ClientResponse::ReadLineFd(Err(error)));
+        }
+    }
+}
+
+async fn handle_client_close_file(stream: &mut TcpStream, node_name: String, fd:i32, state: &Arc<DaemonState>) {
+    send_message_tcp(stream, ClientResponse::Close(close_file(&node_name, fd, state).await));    
 }
 
 /// Handle client Write request
@@ -150,7 +178,16 @@ fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: &Han
                     handle_client_mkdir(&mut stream, &directory, node_name, &state).await;
                 }
                 Ok(ClientRequest::Open(location)) => {
-                    handle_client_open(&mut stream, location, &state).await;
+                    handle_client_open_file(&mut stream, location, &state).await;
+                }
+                Ok(ClientRequest::ReadFd(location, fd, len)) => {
+                    handle_client_read_fd(&mut stream, location, fd, len, & state).await;
+                }
+                Ok(ClientRequest::ReadLineFd(location, fd)) => {
+                    handle_client_read_line_fd(&mut stream, location, fd, & state).await;
+                }
+                Ok(ClientRequest::Close(node_name, fd)) => {
+                    handle_client_close_file(&mut stream, node_name, fd, &state).await;
                 }
                 Ok(ClientRequest::Read(location)) => {
                     handle_client_read(&mut stream, location, &state).await;
@@ -235,7 +272,7 @@ async fn main() -> Result<()> {
         max_cache_size: opt.cache_size,
         used_cache_bytes: RwLock::new(0),
         file_access_lock: RwLock::new(()),
-        open_files: Mutex::new(HashSet::new())
+        open_files: Mutex::new(HashMap::new())
     };
     
     setup_files_dir();

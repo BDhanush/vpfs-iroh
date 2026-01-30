@@ -10,7 +10,7 @@ use messages::*;
 pub struct VPFS {
     pub local: String, // name
     connection: Mutex<TcpStream>,
-    client_fd_to_remote: Mutex<BTreeMap<i32, i32>>,
+    client_to_daemon_fd: Mutex<BTreeMap<i32, i32>>,
     open_files: Mutex<BTreeMap<i32, Location>>,
 }
 
@@ -24,7 +24,7 @@ impl VPFS {
             let vpfs = VPFS { 
             local: local_String,
             connection: Mutex::new(stream),
-            client_fd_to_remote: Mutex::new(BTreeMap::new()),
+            client_to_daemon_fd: Mutex::new(BTreeMap::new()),
             open_files: Mutex::new(BTreeMap::new()),
             };
             Ok(vpfs)
@@ -124,41 +124,114 @@ impl VPFS {
         self.write(location.clone(), buf)
     }
 
-    fn add_to_open_files(&self, daemon_fd: i32, location: Location) {
+    fn add_to_open_files(&self, daemon_fd: i32, location: Location) -> i32 {
         let mut open_files = self.open_files.lock().unwrap();
-        let mut client_fd_to_remote = self.client_fd_to_remote.lock().unwrap();
+        let mut client_to_daemon_fd = self.client_to_daemon_fd.lock().unwrap();
 
         let mut new_fd = 3; // 0,1,2 are stdin, stdout, stderr
-        for (&fd,_) in client_fd_to_remote.range(3..) {
+        for (&fd,_) in client_to_daemon_fd.range(3..) {
             if fd == new_fd {
                 new_fd += 1;
             } else {
                 break;
             }
         }
-        client_fd_to_remote.insert(new_fd, daemon_fd);
+        client_to_daemon_fd.insert(new_fd, daemon_fd);
         open_files.insert(new_fd, location);
+        new_fd
     }
 
     pub fn open(&self, name: &str) -> Result<i32, VPFSError> {
         let dir_entry = self.find(name)?;
         let location = dir_entry.location.clone();
         if let ClientResponse::Open(open_result) = self.send_request(ClientRequest::Open(location.clone())) {
-            if let Ok(fd) = open_result {
-                self.add_to_open_files(fd, location);
+            if let Ok(daemon_fd) = open_result {
+                let client_fd = self.add_to_open_files(daemon_fd, location);
+                return Ok(client_fd);
             }
-            open_result
+            return Err(VPFSError::FileNotOpen);
         } else {
             panic!("Bad response to open")
         }
     }
     
     pub fn read_fd(&self, fd:i32, len:usize) -> Result<Vec<u8>, VPFSError> {
-        Ok(vec![]) // TODO
+        let open_files = self.open_files.lock().unwrap();
+        let client_to_daemon_fd = self.client_to_daemon_fd.lock().unwrap();
+        if !open_files.contains_key(&fd) || !client_to_daemon_fd.contains_key(&fd) {
+            return Err(VPFSError::FileNotOpen);
+        }
+
+        let daemon_fd = client_to_daemon_fd.get(&fd).unwrap().clone();
+        let location = open_files.get(&fd).unwrap().clone();
+        
+        let mut stream = self.connection.lock().unwrap();
+        self.send_request_async(&stream, ClientRequest::ReadFd(location.clone(), daemon_fd, len));
+        match self.receive_response_async(&stream) {
+            ClientResponse::ReadFd(Ok(remote_len)) => {
+                let mut buf=vec![0u8;remote_len];
+                stream.read_exact(&mut buf);
+                return Ok(buf);
+            },
+            ClientResponse::ReadFd(Err(error)) => {
+                return Err(error);
+            },
+            _ => panic!("Bad response to read!"),
+        }
+        
+
     }
 
     pub fn read_line_fd(&self, fd:i32) -> Result<Vec<u8>, VPFSError> {
-        Ok(vec![]) // TODO
+        let open_files = self.open_files.lock().unwrap();
+        let client_to_daemon_fd = self.client_to_daemon_fd.lock().unwrap();
+        if !open_files.contains_key(&fd) || !client_to_daemon_fd.contains_key(&fd) {
+            return Err(VPFSError::FileNotOpen);
+        }
+
+        let daemon_fd = client_to_daemon_fd.get(&fd).unwrap().clone();
+        let location = open_files.get(&fd).unwrap().clone();
+        
+        let mut stream = self.connection.lock().unwrap();
+        self.send_request_async(&stream, ClientRequest::ReadLineFd(location.clone(), daemon_fd));
+        match self.receive_response_async(&stream) {
+            ClientResponse::ReadLineFd(Ok(remote_len)) => {
+                let mut buf=vec![0u8;remote_len];
+                stream.read_exact(&mut buf);
+                return Ok(buf);
+            },
+            ClientResponse::ReadLineFd(Err(error)) => {
+                return Err(error);
+            },
+            _ => panic!("Bad response to read!"),
+        }
+    }
+
+    pub fn close(&self, fd: i32) -> Result<(), VPFSError> {
+        let mut open_files = self.open_files.lock().unwrap();
+        let mut client_to_daemon_fd = self.client_to_daemon_fd.lock().unwrap();
+        if !open_files.contains_key(&fd) || !client_to_daemon_fd.contains_key(&fd) {
+            return Err(VPFSError::FileNotOpen);
+        }
+
+        let daemon_fd = client_to_daemon_fd.get(&fd).unwrap().clone();
+        let location = open_files.get(&fd).unwrap().clone();
+        
+        let mut stream = self.connection.lock().unwrap();
+        self.send_request_async(&stream, ClientRequest::Close(location.node_name, daemon_fd));
+        match self.receive_response_async(&stream) {
+            ClientResponse::Close(Ok(())) => {
+                open_files.remove(&fd);
+                client_to_daemon_fd.remove(&fd);
+
+                Ok(())
+            },
+            ClientResponse::Close(Err(error)) => {
+                Err(error)
+            },
+            _ => panic!("Bad response to close!"),
+        }
+        
     }
 }
 

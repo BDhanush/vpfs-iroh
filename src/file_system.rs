@@ -1,12 +1,14 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
-use std::os::fd::IntoRawFd;
+use std::os::fd::{AsRawFd, IntoRawFd};
+use std::result;
 use std::{fs, io::Read};
 use std::sync::{Mutex, RwLock};
-use std::io::{self, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::sync::Arc;
 use rand::Rng;
 use lru::LruCache;
+use rand::rand_core::le;
 
 use std::sync::MutexGuard;
 
@@ -374,14 +376,14 @@ pub async fn recursive_find(file: &str, state: &Arc<DaemonState>) -> Result<Dire
     }
 }
 
-pub fn open_file_local(uri: &str, open_files: &Mutex<HashSet<i32>>) -> io::Result<i32> {
+pub fn open_file_local(uri: &str, open_files: &Mutex<HashMap<i32,File>>) -> io::Result<i32> {
     // fs_lock.read().unwrap();
     let file = File::open(uri);
     match file {
         Ok(file) => {
             let mut open_files = open_files.lock().unwrap();
-            let fd = file.into_raw_fd();
-            open_files.insert(fd);
+            let fd = file.as_raw_fd();
+            open_files.insert(fd, file);
             Ok(fd)
         },
         Err(e) => Err(e),
@@ -408,6 +410,181 @@ pub async fn open_file(location: Location, state: &Arc<DaemonState>) -> Result<i
             match receive_message(&mut recv).await {
                 Ok(DaemonResponse::Open(fd_result)) => {
                     return fd_result;
+                },
+                Ok(_) => panic!("Bad response"),
+                Err(_) => {
+                    todo!("Check if error came from bad response, or from connection closing")
+                }
+            }                
+        }
+        Err(e) => {
+            eprintln!("✗ Error opening bi-directional stream: {}", e);
+            return Err(VPFSError::NotAccessible);
+        }
+        
+    }
+}
+
+pub fn read_fd_local(fd: i32, len:usize, open_files: &Mutex<HashMap<i32,File>>) -> io::Result<Vec<u8>>{
+    let mut open_files = open_files.lock().unwrap();
+    let file = open_files
+        .get_mut(&fd)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+
+    // let mut reader = BufReader::new(file);
+    // let mut buf = Vec::new();
+
+    // reader.take(len as u64)         
+    //     .read_to_end(&mut buf)?;
+
+    // Ok(buf)
+
+    let mut buf = vec![0u8; len];
+    let n = file.read(&mut buf)?;
+
+    buf.truncate(n);
+    Ok(buf)
+}
+
+pub fn read_line_fd_local(fd: i32, open_files: &Mutex<HashMap<i32,File>>) -> io::Result<Vec<u8>>{
+    let mut open_files = open_files.lock().unwrap();
+    let file = open_files
+        .get_mut(&fd)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+
+    // let mut reader = BufReader::new(file);
+    // let mut line = String::new();
+
+    // reader.read_line(&mut line)?;
+
+    // Ok(line.into_bytes())
+
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+
+    loop {
+        let n = file.read(&mut byte)?;
+        if n == 0 {
+            break; // EOF
+        }
+
+        buf.push(byte[0]);
+        
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+
+    Ok(buf)
+}
+
+pub async fn read_fd(location: &Location, fd:i32, len:usize, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
+    if location.node_name == state.local.name {
+        if let Ok(fd) = read_fd_local(fd, len, &state.open_files) {
+            return Ok(fd);
+        }
+        return Err(VPFSError::FileNotOpen);
+    }
+    let file_owner_connection = stream_for(&location.node_name, state).await;
+    if file_owner_connection.is_none() {
+        return Err(VPFSError::NotAccessible);
+    }
+    let file_owner_connection = file_owner_connection.unwrap();
+    let mut file_owner_connection = file_owner_connection.lock().unwrap();
+    match file_owner_connection.open_bi().await {
+        Ok((mut send, mut recv)) => {
+            send_message(&mut send, DaemonRequest::ReadFd(fd, len)).await;
+            
+            match receive_message(&mut recv).await {
+                Ok(DaemonResponse::ReadFd(Ok(()))) => {
+                    let buf = receive_message::<Vec<u8>>(&mut recv).await.unwrap();
+                    return Ok(buf)
+                },
+                Ok(DaemonResponse::ReadFd(Err(error))) => {
+                    return Err(error)
+                },
+                Ok(_) => panic!("Bad response"),
+                Err(_) => {
+                    todo!("Check if error came from bad response, or from connection closing")
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("✗ Error opening bi-directional stream: {}", e);
+            return Err(VPFSError::NotAccessible);
+        }
+        
+    }
+}
+
+pub async fn read_line_fd(location: &Location, fd:i32, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
+    if location.node_name == state.local.name {
+        if let Ok(fd) = read_line_fd_local(fd, &state.open_files) {
+            return Ok(fd);
+        }
+        return Err(VPFSError::FileNotOpen);
+    }
+    let file_owner_connection = stream_for(&location.node_name, state).await;
+    if file_owner_connection.is_none() {
+        return Err(VPFSError::NotAccessible);
+    }
+    let file_owner_connection = file_owner_connection.unwrap();
+    let mut file_owner_connection = file_owner_connection.lock().unwrap();
+    match file_owner_connection.open_bi().await {
+        Ok((mut send, mut recv)) => {
+            send_message(&mut send, DaemonRequest::ReadLineFd(fd)).await;
+            
+            match receive_message(&mut recv).await {
+                Ok(DaemonResponse::ReadLineFd(Ok(()))) => {
+                    let buf = receive_message::<Vec<u8>>(&mut recv).await.unwrap();
+                    return Ok(buf)
+                },
+                Ok(DaemonResponse::ReadLineFd(Err(error))) => {
+                    return Err(error)
+                },
+                Ok(_) => panic!("Bad response"),
+                Err(_) => {
+                    todo!("Check if error came from bad response, or from connection closing")
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("✗ Error opening bi-directional stream: {}", e);
+            return Err(VPFSError::NotAccessible);
+        }
+        
+    }
+}
+
+pub fn close_file_local(fd: i32, open_files: &Mutex<HashMap<i32,File>>) -> io::Result<()> {
+    let mut open_files = open_files.lock().unwrap();
+    if !open_files.contains_key(&fd) {
+        return Err(io::Error::from(io::ErrorKind::NotFound));
+    }
+    open_files.remove(&fd);
+    Ok(())
+}
+
+pub async fn close_file(node_name: &String, fd: i32, state: &Arc<DaemonState>) -> Result<(), VPFSError> {
+    if *node_name == state.local.name {
+        if let Ok(()) = close_file_local(fd, &state.open_files) {
+            return Ok(());
+        }
+        return Err(VPFSError::FileNotOpen);
+    }
+    let file_owner_connection = stream_for(node_name, state).await;
+    if file_owner_connection.is_none() {
+        return Err(VPFSError::NotAccessible);
+    }
+    let file_owner_connection = file_owner_connection.unwrap();
+    let mut file_owner_connection = file_owner_connection.lock().unwrap();
+    match file_owner_connection.open_bi().await {
+        Ok((mut send, mut recv)) => {
+            send_message(&mut send, DaemonRequest::Close(node_name.clone(), fd)).await;
+            
+            match receive_message(&mut recv).await {
+                Ok(DaemonResponse::Close(close_result)) => {
+                    return close_result;
                 },
                 Ok(_) => panic!("Bad response"),
                 Err(_) => {
