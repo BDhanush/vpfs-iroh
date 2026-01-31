@@ -580,7 +580,7 @@ pub async fn close_file(node_name: &String, fd: i32, state: &Arc<DaemonState>) -
     let mut file_owner_connection = file_owner_connection.lock().unwrap();
     match file_owner_connection.open_bi().await {
         Ok((mut send, mut recv)) => {
-            send_message(&mut send, DaemonRequest::Close(node_name.clone(), fd)).await;
+            send_message(&mut send, DaemonRequest::Close(fd)).await;
             
             match receive_message(&mut recv).await {
                 Ok(DaemonResponse::Close(close_result)) => {

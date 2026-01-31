@@ -68,7 +68,7 @@ pub enum DaemonRequest {
     Read(String, Option<SystemTime>),
     ReadFd(i32, usize),
     ReadLineFd(i32),
-    Close(String, i32),
+    Close(i32),
     Write(String),
     Remove(String),
     AppendDirectoryEntry(String, DirectoryEntry),

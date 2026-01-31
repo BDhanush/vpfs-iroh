@@ -39,6 +39,38 @@ impl VPFSProtocol {
                         }
                     }
                 }
+                Ok(DaemonRequest::ReadFd(fd, len)) => {
+                    match read_fd_local(fd, len, &self.state.open_files) {
+                        Ok(buf) => {
+                            send_message(&mut send, DaemonResponse::ReadFd(Ok(()))).await;
+                            send_message(&mut send, buf).await;
+                        }
+                        Err(e) => {
+                            send_message(&mut send, DaemonResponse::ReadFd(Err(VPFSError::FileNotOpen))).await;
+                        }
+                    }
+                }
+                Ok(DaemonRequest::ReadLineFd(fd)) => {
+                    match read_line_fd_local(fd, &self.state.open_files) {
+                        Ok(buf) => {
+                            send_message(&mut send, DaemonResponse::ReadLineFd(Ok(()))).await;
+                            send_message(&mut send, buf).await;
+                        }
+                        Err(e) => {
+                            send_message(&mut send, DaemonResponse::ReadLineFd(Err(VPFSError::FileNotOpen))).await;
+                        }
+                    }
+                }
+                Ok(DaemonRequest::Close(fd)) => {
+                    match close_file_local(fd, &self.state.open_files) {
+                        Ok(()) => {
+                            send_message(&mut send, DaemonResponse::Close(Ok(()))).await;
+                        }
+                        Err(e) => {
+                            send_message(&mut send, DaemonResponse::Close(Err(VPFSError::FileNotOpen))).await;
+                        }
+                    }
+                }
                 Ok(DaemonRequest::Read( uri, last_modified )) => {
                     let should_send = {
                         if let Some(remote_last_modified) = last_modified {
