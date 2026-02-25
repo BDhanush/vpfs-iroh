@@ -1,4 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::io::{BufReader, BufWriter};
+
+use std::ffi::{CStr};
+use std::os::raw::{c_char, c_int, c_uchar};
+use std::ptr;
+use std::os::linux::net::TcpStreamExt;
+
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpStream};
@@ -17,6 +24,8 @@ pub struct VPFS {
 impl VPFS {
     pub fn connect(listen_port: u16) -> Result<VPFS, std::io::Error> {
         let stream = TcpStream::connect(format!("localhost:{}", listen_port))?;
+        stream.set_nodelay(true);
+        stream.set_quickack(true);
 
         serde_bare::to_writer(&stream, &Hello::ClientHello)?;
         let hello_response = serde_bare::from_reader::<_, HelloResponse>(&stream);
@@ -232,6 +241,82 @@ impl VPFS {
             _ => panic!("Bad response to close!"),
         }
         
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vpfs_connect(port: u16) -> *mut VPFS {
+    match VPFS::connect(port) {
+        Ok(vpfs) => Box::into_raw(Box::new(vpfs)),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vpfs_free(vpfs: *mut VPFS) {
+    if !vpfs.is_null() {
+        drop(Box::from_raw(vpfs));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vpfs_open(
+    vpfs: *mut VPFS,
+    name: *const c_char,
+) -> c_int {
+    if vpfs.is_null() || name.is_null() {
+        return -1;
+    }
+
+    let vpfs = unsafe { &*vpfs };
+    let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
+
+    match vpfs.open(name) {
+        Ok(fd) => fd,
+        Err(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vpfs_read_fd(
+    vpfs: *mut VPFS,
+    fd: c_int,
+    buf: *mut c_uchar,
+    bufsize: usize,
+) -> isize {
+    if vpfs.is_null() || buf.is_null() {
+        return -1;
+    }
+
+    let vpfs = unsafe { &*vpfs };
+
+    match vpfs.read_fd(fd, bufsize) {
+        Ok(read_buf) => {
+            let n = read_buf.len();
+
+            // Copy into caller buffer
+            ptr::copy_nonoverlapping(
+                read_buf.as_ptr(),
+                buf,
+                n,
+            );
+
+            n as isize
+        }
+        Err(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vpfs_close(vpfs: *mut VPFS, fd: c_int) -> c_int {
+    if vpfs.is_null() {
+        return -1;
+    }
+
+    let vpfs = unsafe { &*vpfs };
+    match vpfs.close(fd) {
+        Ok(_) => 0,
+        Err(_) => -1,
     }
 }
 

@@ -7,6 +7,7 @@ use tokio::runtime::Handle;
 use anyhow::Result;
 
 use std::hash::Hash;
+use std::os::linux::net::TcpStreamExt;
 use std::thread;
 use std::net::{TcpListener, TcpStream};
 use std::fs;
@@ -206,6 +207,9 @@ fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: &Han
 
 /// Handle incoming connection from client program
 fn handle_connection(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: Handle) {
+    stream.set_nodelay(true);
+    stream.set_quickack(true);
+
     match receive_message_tcp(&mut stream) {
         Ok(Hello::ClientHello) => {
             println!("User process connected");
