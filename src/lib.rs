@@ -1,3 +1,4 @@
+use anyhow::Error;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter};
 
@@ -23,15 +24,29 @@ pub struct VPFS {
 
 impl VPFS {
     pub fn connect(listen_port: u16) -> Result<VPFS, std::io::Error> {
-        let stream = TcpStream::connect(format!("localhost:{}", listen_port))?;
+        let mut stream = TcpStream::connect(format!("localhost:{}", listen_port))?;
         stream.set_nodelay(true);
         stream.set_quickack(true);
 
-        serde_bare::to_writer(&stream, &Hello::ClientHello)?;
-        let hello_response = serde_bare::from_reader::<_, HelloResponse>(&stream);
-        if let Ok(HelloResponse::ClientHello(local_String)) = hello_response{
+        // serde_bare::to_writer(&stream, &Hello::ClientHello)?;
+        // Serialize message
+        let buf = serde_bare::to_vec(&Hello::ClientHello)?;
+        // Write length
+        stream.write_all(&(buf.len() as u64).to_be_bytes())?;
+        // Write payload
+        stream.write_all(&buf)?;
+
+        let mut len_buf = [0u8; 8];
+        stream.read_exact(&mut len_buf);
+        let len = u64::from_be_bytes(len_buf) as usize;
+        let mut buf = vec![0u8; len];
+        stream.read_exact(&mut buf);
+
+        // Deserialize message
+        let hello_response = serde_bare::from_slice(&buf);
+        if let Ok(HelloResponse::ClientHello(local_string)) = hello_response{
             let vpfs = VPFS { 
-            local: local_String,
+            local: local_string,
             connection: Mutex::new(stream),
             client_to_daemon_fd: Mutex::new(BTreeMap::new()),
             open_files: Mutex::new(BTreeMap::new()),
@@ -44,20 +59,45 @@ impl VPFS {
         
     }
 
-    fn send_request_async(&self, stream: &TcpStream, req: ClientRequest) {
-        serde_bare::to_writer(stream, &req).unwrap();
+    fn send_request_async(&self, stream: &mut TcpStream, req: ClientRequest) {
+        // Serialize message
+        let buf = serde_bare::to_vec(&req).unwrap();
+
+        // Write length
+        stream.write_all(&(buf.len() as u64).to_be_bytes());
+        // Write payload
+        stream.write_all(&buf);
     }
 
-    fn receive_response_async(&self, stream: &TcpStream) -> ClientResponse {
-        let resp = serde_bare::from_reader(stream).unwrap();
-        resp
+    fn receive_response_async(&self, stream: &mut TcpStream) -> ClientResponse {
+        // Read length
+        let mut len_buf = [0u8; 8];
+        stream.read_exact(&mut len_buf);
+        let len = u64::from_be_bytes(len_buf) as usize;
+
+        // Read payload
+        let mut buf = vec![0u8; len];
+        stream.read_exact(&mut buf);
+
+        // Deserialize message
+        let msg = serde_bare::from_slice(&buf).unwrap();
+        msg
     }
 
     fn send_request(&self, req: ClientRequest) -> ClientResponse {
-        let stream = self.connection.lock().unwrap();
-        serde_bare::to_writer(&mut &*stream, &req).unwrap();
-        let resp = serde_bare::from_reader(&*stream).unwrap();
-        resp
+        let mut stream = self.connection.lock().unwrap();
+        self.send_request_async(&mut stream, req);
+        self.receive_response_async(&mut stream)
+    }
+
+    fn send_buf(&self, stream: &mut TcpStream, buf: &Vec<u8>) {
+        stream.write_all(&buf).unwrap();
+    }
+
+    fn receive_buf(&self, stream: &mut TcpStream, len: usize) -> Result<Vec<u8>, Error> {
+        let mut buf = vec![0u8; len];
+        stream.read_exact(&mut buf)?;
+        Ok(buf)
     }
 
     pub fn find(&self, path: &str) -> Result<DirectoryEntry, VPFSError> {
@@ -89,11 +129,10 @@ impl VPFS {
 
     pub fn read(&self, what: Location) -> Result<Vec<u8>, VPFSError> {
         let mut stream = self.connection.lock().unwrap();
-        self.send_request_async(&stream, ClientRequest::Read(what));
-        match self.receive_response_async(&stream) {
+        self.send_request_async(&mut stream, ClientRequest::Read(what));
+        match self.receive_response_async(&mut stream) {
             ClientResponse::Read(Ok(len)) => {
-                let mut buf=vec![0u8;len];
-                stream.read_exact(&mut buf);
+                let buf = self.receive_buf(&mut stream, len).unwrap();
                 Ok(buf)
             },
             ClientResponse::Read(Err(error)) => {
@@ -102,12 +141,12 @@ impl VPFS {
             _ => panic!("Bad response to read!"),
         }
     } 
-    pub fn write(&self, what: Location, buf: &[u8]) -> Result<(), VPFSError> {
+    pub fn write(&self, what: Location, buf: &Vec<u8>) -> Result<(), VPFSError> {
         let mut stream = self.connection.lock().unwrap();
-        self.send_request_async(&stream, ClientRequest::Write(what, buf.len()));
-        stream.write_all(buf);
+        self.send_request_async(&mut stream, ClientRequest::Write(what, buf.len()));
+        self.send_buf(&mut stream, &buf);
 
-        match self.receive_response_async(&stream) {
+        match self.receive_response_async(&mut stream) {
             ClientResponse::Write(Ok(len)) => {
                 assert!(len == buf.len());
                 Ok(())
@@ -124,7 +163,7 @@ impl VPFS {
         self.read(dir_entry.location)
     }
 
-    pub fn store(&self, name: &str, buf: &[u8]) -> Result<(), VPFSError> {
+    pub fn store(&self, name: &str, buf: &Vec<u8>) -> Result<(), VPFSError> {
         let location = match self.place(name, self.local.clone()) {
             Ok(location) => location,
             Err(VPFSError::AlreadyExists(dir_entry)) => dir_entry.location,
@@ -175,11 +214,10 @@ impl VPFS {
         let location = open_files.get(&fd).unwrap().clone();
         
         let mut stream = self.connection.lock().unwrap();
-        self.send_request_async(&stream, ClientRequest::ReadFd(location.clone(), daemon_fd, len));
-        match self.receive_response_async(&stream) {
+        self.send_request_async(&mut stream, ClientRequest::ReadFd(location.clone(), daemon_fd, len));
+        match self.receive_response_async(&mut stream) {
             ClientResponse::ReadFd(Ok(remote_len)) => {
-                let mut buf=vec![0u8;remote_len];
-                stream.read_exact(&mut buf);
+                let buf = self.receive_buf(&mut stream, remote_len).unwrap();
                 return Ok(buf);
             },
             ClientResponse::ReadFd(Err(error)) => {
@@ -202,11 +240,10 @@ impl VPFS {
         let location = open_files.get(&fd).unwrap().clone();
         
         let mut stream = self.connection.lock().unwrap();
-        self.send_request_async(&stream, ClientRequest::ReadLineFd(location.clone(), daemon_fd));
-        match self.receive_response_async(&stream) {
+        self.send_request_async(&mut stream, ClientRequest::ReadLineFd(location.clone(), daemon_fd));
+        match self.receive_response_async(&mut stream) {
             ClientResponse::ReadLineFd(Ok(remote_len)) => {
-                let mut buf=vec![0u8;remote_len];
-                stream.read_exact(&mut buf);
+                let buf = self.receive_buf(&mut stream, remote_len).unwrap();
                 return Ok(buf);
             },
             ClientResponse::ReadLineFd(Err(error)) => {
@@ -227,8 +264,8 @@ impl VPFS {
         let location = open_files.get(&fd).unwrap().clone();
         
         let mut stream = self.connection.lock().unwrap();
-        self.send_request_async(&stream, ClientRequest::Close(location.node_name, daemon_fd));
-        match self.receive_response_async(&stream) {
+        self.send_request_async(&mut stream, ClientRequest::Close(location.node_name, daemon_fd));
+        match self.receive_response_async(&mut stream) {
             ClientResponse::Close(Ok(())) => {
                 open_files.remove(&fd);
                 client_to_daemon_fd.remove(&fd);

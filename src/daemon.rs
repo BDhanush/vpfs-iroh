@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use serde::{Serialize};
 use lru::LruCache;
 use tokio::runtime::Handle;
-use anyhow::Result;
+use anyhow::{Error, Result};
 
 use std::hash::Hash;
 use std::os::linux::net::TcpStreamExt;
@@ -53,12 +53,39 @@ struct Opt {
 
 /// Send a message to a TcpStream
 fn send_message_tcp <T: Serialize>(stream: &mut TcpStream, message: T) {
-    serde_bare::to_writer(stream, &message).unwrap();
+    // Serialize message
+    let buf = serde_bare::to_vec(&message).unwrap();
+
+    // Write length
+    stream.write_all(&(buf.len() as u64).to_be_bytes()).unwrap();
+    // Write payload
+    stream.write_all(&buf).unwrap();
 }
 
 /// Receive a message from a TcpStream
 fn receive_message_tcp <T: DeserializeOwned>(stream: &mut TcpStream) -> Result<T, serde_bare::error::Error> {
-    serde_bare::from_reader(stream)
+    // Read length
+    let mut len_buf = [0u8; 8];
+    stream.read_exact(&mut len_buf).unwrap();
+    let len = u64::from_be_bytes(len_buf) as usize;
+    
+    // Read payload
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).unwrap();
+
+    // Deserialize message
+    let msg = serde_bare::from_slice(&buf);
+    msg
+}
+
+fn send_buf_tcp(stream: &mut TcpStream, buf: &Vec<u8>) {
+    stream.write_all(&buf).unwrap();
+}
+
+fn receive_buf_tcp(stream: &mut TcpStream, len: usize) -> Result<Vec<u8>, Error> {
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf)?;
+    Ok(buf)
 }
 
 /// Handle client Find request
@@ -87,7 +114,7 @@ async fn handle_client_read(stream: &mut TcpStream, location: Location, state: &
     if location.node_name == state.local.name {
         if let Ok(buf) = read_local(&location.uri, &state.file_access_lock) {
             send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));                    
-            stream.write_all(&buf);
+            send_buf_tcp(stream, &buf);
         } else {
             send_message_tcp(stream, ClientResponse::Read(Err(VPFSError::DoesNotExist)));
         }
@@ -95,7 +122,7 @@ async fn handle_client_read(stream: &mut TcpStream, location: Location, state: &
         match read_remote(&location, state).await {
             Ok(buf) => {
                 send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));                    
-                stream.write_all(&buf);
+                send_buf_tcp(stream, &buf);
             }
             Err(error) => {
                 send_message_tcp(stream, ClientResponse::Read(Err(error)));
@@ -108,7 +135,7 @@ async fn handle_client_read_fd(stream: &mut TcpStream, location: Location, fd: i
     match read_fd(&location, fd, len, state).await {
         Ok(buf) => {
             send_message_tcp(stream, ClientResponse::ReadFd(Ok(buf.len())));                    
-            stream.write_all(&buf);
+            send_buf_tcp(stream, &buf);
         }
         Err(error) => {
             send_message_tcp(stream, ClientResponse::ReadFd(Err(error)));
@@ -120,7 +147,7 @@ async fn handle_client_read_line_fd(stream: &mut TcpStream, location: Location, 
     match read_line_fd(&location, fd, state).await {
         Ok(buf) => {
             send_message_tcp(stream, ClientResponse::ReadLineFd(Ok(buf.len())));                    
-            stream.write_all(&buf);
+            send_buf_tcp(stream, &buf);            
         }
         Err(error) => {
             send_message_tcp(stream, ClientResponse::ReadLineFd(Err(error)));
@@ -135,8 +162,7 @@ async fn handle_client_close_file(stream: &mut TcpStream, node_name: String, fd:
 /// Handle client Write request
 async fn handle_client_write(stream: &mut TcpStream, location: Location, file_len: usize, state: &Arc<DaemonState>) {
     if location.node_name == state.local.name {
-        let mut buf = vec![0u8;file_len];
-        stream.read_exact(buf.as_mut()).unwrap();
+        let mut buf = receive_buf_tcp(stream, file_len).unwrap();
         if write_local(&location.uri, &buf, &state.file_access_lock).is_ok() {
             send_message_tcp(stream, ClientResponse::Write(Ok(file_len)));
         } else {
@@ -147,8 +173,8 @@ async fn handle_client_write(stream: &mut TcpStream, location: Location, file_le
         match file_owner_connection.open_bi().await {
             Ok((mut send, mut recv)) => {
                 
-                let mut buf = vec![0u8; file_len];
-                stream.read_exact(&mut buf);
+                let mut buf = receive_buf_tcp(stream, file_len).unwrap();
+
                 send_message(&mut send, DaemonRequest::Write(location.uri)).await;
                 send_message(&mut send, buf).await;
                 if let Ok(DaemonResponse::Write(write_result)) = receive_message(&mut recv).await {
@@ -167,7 +193,9 @@ async fn handle_client_write(stream: &mut TcpStream, location: Location, file_le
 /// Handle requests from connected client program
 fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: &Handle) {
     rt_handle.block_on(async {
+        println!("handle client");
         loop {
+
             match receive_message_tcp(&mut stream) {
                 Ok(ClientRequest::Find(file)) => {
                     handle_client_find(&mut stream, &file, &state).await;
@@ -210,6 +238,7 @@ fn handle_connection(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: 
     stream.set_nodelay(true);
     stream.set_quickack(true);
 
+    println!("handle connection");
     match receive_message_tcp(&mut stream) {
         Ok(Hello::ClientHello) => {
             println!("User process connected");
