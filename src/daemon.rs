@@ -37,7 +37,7 @@ struct Opt {
     #[arg(short, long, default_value_t = 8080)]
     port: u16,
 
-    #[arg(short, long)]
+    #[arg(short, long, default_value_t = 8082)]
     listen_port: u16,
 
     #[arg(short, long)]
