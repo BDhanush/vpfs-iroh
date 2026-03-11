@@ -1,10 +1,12 @@
 use anyhow::Error;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter};
+use libc::FIONREAD;
 
 use std::sync::OnceLock;
 use std::ffi::{CStr};
-use std::os::raw::{c_char, c_int, c_uchar};
+use std::os::raw::{c_char, c_int, c_uchar, c_ulong, c_void};
+
 use std::ptr;
 use std::os::linux::net::TcpStreamExt;
 
@@ -264,6 +266,25 @@ impl VPFS {
         }
     }
 
+    pub fn ioctl<T>(&self, fd:i32, request: u64, arg: &mut T,) -> Result<i32, VPFSError> {
+        if request != FIONREAD as u64 {
+            panic!("Unsupported ioctl request: {}", request)
+        }
+
+        let open_files = self.open_files.lock().unwrap();
+        let client_to_daemon_fd = self.client_to_daemon_fd.lock().unwrap();
+        if !open_files.contains_key(&fd) || !client_to_daemon_fd.contains_key(&fd) {
+            return Err(VPFSError::FileNotOpen);
+        }
+
+        let daemon_fd = client_to_daemon_fd.get(&fd).unwrap().clone();
+        let location = open_files.get(&fd).unwrap().clone();
+
+        let n_to_read = arg as *mut T as *mut u64;
+        
+        return Ok(0);
+    }
+
     pub fn close(&self, fd: i32) -> Result<(), VPFSError> {
         let mut open_files = self.open_files.lock().unwrap();
         let mut client_to_daemon_fd = self.client_to_daemon_fd.lock().unwrap();
@@ -335,6 +356,26 @@ pub unsafe extern "C" fn vpfs_read_fd(
             n as isize
         }
         Err(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn vpfs_ioctl(
+    fd: c_int,
+    request: c_ulong,
+    argp: *mut c_void,
+) -> c_int {
+    if argp.is_null() {
+        return -1;
+    }
+
+    let vpfs = get_vpfs();
+
+    unsafe {
+        match vpfs.ioctl(fd as i32, request as u64, &mut *argp) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
     }
 }
 
