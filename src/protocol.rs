@@ -5,6 +5,7 @@ use iroh::{
 
 use std::sync::Arc;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 
 use crate::state::DaemonState;
 use crate::messages::*;
@@ -20,7 +21,7 @@ impl VPFSProtocol {
     pub const ALPN: &'static [u8] = b"uic/vpfs";
 
     /// Handle daemon requests
-    async fn handle_daemon(&self, mut conn:Connection) {
+    async fn handle_daemon(&self, conn: Arc<Connection>) {
         let remote_id = conn.remote_id();
 
         while let Ok((mut send, mut recv)) = conn.accept_bi().await {
@@ -45,7 +46,7 @@ impl VPFSProtocol {
                             send_message(&mut send, DaemonResponse::ReadFd(Ok(()))).await;
                             send_message(&mut send, buf).await;
                         }
-                        Err(e) => {
+                        Err(_) => {
                             send_message(&mut send, DaemonResponse::ReadFd(Err(VPFSError::FileNotOpen))).await;
                         }
                     }
@@ -56,7 +57,7 @@ impl VPFSProtocol {
                             send_message(&mut send, DaemonResponse::ReadLineFd(Ok(()))).await;
                             send_message(&mut send, buf).await;
                         }
-                        Err(e) => {
+                        Err(_) => {
                             send_message(&mut send, DaemonResponse::ReadLineFd(Err(VPFSError::FileNotOpen))).await;
                         }
                     }
@@ -66,7 +67,7 @@ impl VPFSProtocol {
                         Ok(()) => {
                             send_message(&mut send, DaemonResponse::Close(Ok(()))).await;
                         }
-                        Err(e) => {
+                        Err(_) => {
                             send_message(&mut send, DaemonResponse::Close(Err(VPFSError::FileNotOpen))).await;
                         }
                     }
@@ -74,7 +75,7 @@ impl VPFSProtocol {
                 Ok(DaemonRequest::Read( uri, last_modified )) => {
                     let should_send = {
                         if let Some(remote_last_modified) = last_modified {
-                            let fs_lock = self.state.file_access_lock.read().unwrap();
+                            let _fs_lock = self.state.fs_access_lock.read().unwrap();
                             if let Ok(file_data) = fs::metadata(&uri) {
                                 if let Ok(local_last_modified) = file_data.modified() {
                                     local_last_modified >= remote_last_modified
@@ -90,7 +91,7 @@ impl VPFSProtocol {
                         continue;
                     }
 
-                    match read_local(&uri, &self.state.file_access_lock) {
+                    match read_local(&uri, &self.state.fs_access_lock) {
                         Ok(buf) => {
                             send_message(&mut send, DaemonResponse::Read(Ok(()))).await;
                             send_message(&mut send, buf).await;
@@ -102,7 +103,7 @@ impl VPFSProtocol {
                 }
                 Ok(DaemonRequest::Write(uri)) => {
                     let buf=receive_message::<Vec<u8>>(&mut recv).await.unwrap();
-                    if write_local(&uri, &buf, &self.state.file_access_lock).is_ok() {
+                    if write_local(&uri, &buf, &self.state.fs_access_lock).is_ok() {
                         send_message(&mut send, DaemonResponse::Write(Ok(buf.len()))).await;
                     } else {
                         send_message(&mut send, DaemonResponse::Write(Err(VPFSError::DoesNotExist))).await;
@@ -113,7 +114,7 @@ impl VPFSProtocol {
                 }
                 Ok(DaemonRequest::Remove(uri)) => {
                     let result = {
-                        let _fs_lock = self.state.file_access_lock.write().unwrap();
+                        let _fs_lock = self.state.fs_access_lock.write().unwrap();
                         fs::remove_file(uri).is_ok()
                     };
 
@@ -125,13 +126,26 @@ impl VPFSProtocol {
                 }
                 Ok(DaemonRequest::AddressFor(node_name)) => {
                     let addr = {
-                        let known_hosts_lock = self.state.known_hosts.lock().unwrap();
-                        known_hosts_lock
-                            .as_ref()
-                            .and_then(|kh| kh.get(&node_name).cloned())
+                        let known_nodes = self.state.known_nodes.lock().unwrap();
+                        known_nodes.get(&node_name).cloned()
                     };
 
                     send_message(&mut send, DaemonResponse::AddressFor(addr)).await;
+                }
+                Ok(DaemonRequest::DirStructure()) => {
+                    if let Ok(entries) = fs::read_dir(".") {
+                        for entry in entries.flatten() {
+                            if let Ok(mut file) = fs::File::open(entry.path()) {
+                                if serde_bare::from_reader::<_, DirectoryEntry>(&mut file).is_ok() {
+                                    file.seek(SeekFrom::Start(0)).ok();
+                                    let mut data = Vec::new();
+                                    file.read_to_end(&mut data).ok();
+                                    send_message(&mut send, DaemonResponse::DirStructureData(data)).await;
+                                }
+                            }
+                        }
+                    }
+                    send_message(&mut send, DaemonResponse::DirStructureDone(Ok(()))).await;
                 }
                 Ok(_) => eprintln!("Unexpected message from {remote_id}"),
                 Err(e) => eprintln!("Error receiving message from {remote_id}: {:?}", e),
@@ -141,7 +155,8 @@ impl VPFSProtocol {
     }
 
     /// Handle an incoming iroh connection
-    pub async fn handle_connection(&self, mut conn: Connection) {
+    pub async fn handle_connection(&self, conn: Connection) {
+        let conn = Arc::new(conn);
         let remote_id = conn.remote_id();
         println!("Accepted connection from {remote_id}");
 
@@ -149,22 +164,26 @@ impl VPFSProtocol {
             println!("Opened bi-directional stream, endpoint id: {}", remote_id);
 
             match receive_message(&mut recv).await {
-                Ok(Hello::DaemonHello) => {
+                Ok(Hello::DaemonHello(node)) => {
+                    {    
+                        let mut known_nodes = self.state.known_nodes.lock().unwrap();
+                        known_nodes.insert(node.name.clone(), node.endpoint_id.clone());
+                        let mut connections = self.state.connections.lock().unwrap();
+                        connections.insert(node.name.clone(), conn.clone());
+                    }
                     send_message(&mut send, HelloResponse::DaemonHello).await;
                     self.handle_daemon(conn).await;
                 }
-                Ok(Hello::RootHello(connecting_node)) => {
-                    let (root_node, known_hosts_snapshot) = {
-                        let mut known_hosts = self.state.known_hosts.lock().unwrap();
-                        known_hosts.as_mut().unwrap().insert(connecting_node.name.clone(), remote_id);
-
-                        let root_guard = self.state.root.read().unwrap();
-
-                        (root_guard.clone().unwrap(), known_hosts.clone().unwrap())
-                        // all locks dropped here else we'll have locks set in await fn
+                Ok(Hello::InitHello(new_nodes)) => {
+                    let known_nodes_snapshot = {
+                        let mut known_nodes = self.state.known_nodes.lock().unwrap();
+                        let mut known_nodes_snapshot = known_nodes.clone();
+                        known_nodes.extend(new_nodes);
+                        known_nodes_snapshot.insert(self.state.local.name.clone(), self.state.local.endpoint_id.clone());
+                        known_nodes_snapshot
                     };
 
-                    send_message(&mut send, HelloResponse::RootHello(root_node, known_hosts_snapshot)).await;
+                    send_message(&mut send, HelloResponse::InitHello(known_nodes_snapshot)).await;
                     self.handle_daemon(conn).await;
                 }
                 Ok(_) => eprintln!("Unexpected message from {remote_id}"),

@@ -90,7 +90,7 @@ fn receive_buf_tcp(stream: &mut TcpStream, len: usize) -> Result<Vec<u8>, Error>
 
 /// Handle client Find request
 async fn handle_client_find(stream: &mut TcpStream, file: &str, state: &Arc<DaemonState>) {
-    send_message_tcp(stream, ClientResponse::Find(recursive_find(file, state).await));
+    send_message_tcp(stream, ClientResponse::Find(find(file, state)));
 }
 
 /// Handle client Place request
@@ -112,8 +112,8 @@ async fn handle_client_open_file(stream: &mut TcpStream, location: Location, sta
 async fn handle_client_read(stream: &mut TcpStream, location: Location, state: &Arc<DaemonState>) {
     // if file is local, read locally, else read remotely and send response back through stream
     if location.node_name == state.local.name {
-        if let Ok(buf) = read_local(&location.uri, &state.file_access_lock) {
-            send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));                    
+        if let Ok(buf) = read_local(&location.uri, &state.fs_access_lock) {
+            send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));
             send_buf_tcp(stream, &buf);
         } else {
             send_message_tcp(stream, ClientResponse::Read(Err(VPFSError::DoesNotExist)));
@@ -162,18 +162,17 @@ async fn handle_client_close_file(stream: &mut TcpStream, node_name: String, fd:
 /// Handle client Write request
 async fn handle_client_write(stream: &mut TcpStream, location: Location, file_len: usize, state: &Arc<DaemonState>) {
     if location.node_name == state.local.name {
-        let mut buf = receive_buf_tcp(stream, file_len).unwrap();
-        if write_local(&location.uri, &buf, &state.file_access_lock).is_ok() {
+        let buf = receive_buf_tcp(stream, file_len).unwrap();
+        if write_local(&location.uri, &buf, &state.fs_access_lock).is_ok() {
             send_message_tcp(stream, ClientResponse::Write(Ok(file_len)));
         } else {
             send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::DoesNotExist)));
         }
-    } else if let Some(file_owner_connection) = stream_for(&location.node_name, &state).await {
-        let mut file_owner_connection = file_owner_connection.lock().unwrap();
+    } else if let Some(file_owner_connection) = get_connection(&location.node_name, &state).await {
         match file_owner_connection.open_bi().await {
             Ok((mut send, mut recv)) => {
                 
-                let mut buf = receive_buf_tcp(stream, file_len).unwrap();
+                let buf = receive_buf_tcp(stream, file_len).unwrap();
 
                 send_message(&mut send, DaemonRequest::Write(location.uri)).await;
                 send_message(&mut send, buf).await;
@@ -293,24 +292,17 @@ async fn main() -> Result<()> {
     // initialize daemon state
     let mut state = DaemonState {
         endpoint: endpoint.clone(),
-        root: if let Some(root_id) = opt.root_id {
-            RwLock::new(Some(VPFSNode{name: "root".to_string(), endpoint_id: root_id}))
-        } else {
-            RwLock::new(Some(VPFSNode{name: opt.name.clone(), endpoint_id: endpoint_id}))
-        },
         local: VPFSNode{name: opt.name.clone(), endpoint_id},
         connections: Mutex::new(HashMap::new()),
-        known_hosts: Mutex::new(None),
+        known_nodes: Mutex::new(HashMap::new()),
         cache: Mutex::new(LruCache::unbounded()),
         max_cache_size: opt.cache_size,
         used_cache_bytes: RwLock::new(0),
-        file_access_lock: RwLock::new(()),
+        fs_access_lock: RwLock::new(HashMap::new()),
         open_files: Mutex::new(HashMap::new())
     };
-    
-    setup_files_dir();
-    
-    restore_cache(&mut state);
+        
+    // restore_cache(&mut state);
 
     let state = Arc::new(state);
 
@@ -324,47 +316,25 @@ async fn main() -> Result<()> {
         println!("Running as non root node");
 
         let remote_id = opt.root_id.unwrap();
-        println!("Connecting to root node: {}", remote_id);
-        let endpoint_addr = iroh::EndpointAddr::new(remote_id);
 
-        match router.endpoint().connect(endpoint_addr, VPFSProtocol::ALPN).await {
-            Ok(conn) => {
-                println!("Connected to root node: {remote_id}");
-                match conn.open_bi().await {
-                    Ok((mut send, mut recv)) => {
-                        println!("Opened bi-directional stream to root node: {}", remote_id);
-                        
-                        let msg = Hello::RootHello(state.local.clone());
-                        send_message(&mut send, msg).await?;
-
-                        println!("Sent hello to root node, waiting for response...");
-                        
-                        if let Ok(HelloResponse::RootHello(root_node, host_names)) = receive_message(&mut recv).await {
-                            let mut known_hosts = state.known_hosts.lock().unwrap();
-                            *known_hosts = Some(host_names);
-                            known_hosts.as_mut().unwrap().insert(root_node.name.clone(), remote_id);
-                            // println!("{}",root_node.name);
-                            // println!("{:?}", known_hosts.as_ref().unwrap());
-                            state.root.write().unwrap().replace(root_node);
-                        } else {
-                            eprintln!("✗ Failed to deserialize response from root node");
-                        }
-                        
-                    }
-                    Err(e) => eprintln!("✗ Error opening bi-directional stream: {}", e),
-                }
-            }
-            Err(e) => {
-                eprintln!("✗ Failed to connect to root node: {}", e);
-                eprintln!("Error details: {:?}", e);
-            }
+        let connection = connect_to_network(&router.endpoint(), remote_id, &state).await;
+        if connection.is_none() {
+            panic!("Could not connect")
         }
+        let new_node = !setup_files_dir();
+        if new_node {
+            build_file_system(&connection.unwrap()).await;
+        }
+        establish_connections(&state);
+        
     } else {
-        // current node is the root node
+        // current node is the initial node of network
         // initialize known hosts map, create root directory if it does not exist, and add self links
-        println!("Running as root node");
+        // create logs file if it does not exist
+        println!("Running as first node on vpfs");
 
-        state.known_hosts.lock().unwrap().replace(HashMap::new());
+        let new_node = !setup_files_dir();
+
         if let Err(create_error) = fs::File::create_new("root") {
             if create_error.kind() != io::ErrorKind::AlreadyExists {
                 panic!("Could not create root directory");
@@ -378,6 +348,12 @@ async fn main() -> Result<()> {
             let _ = append_dir_entry("root", &self_link, &state);
             self_link.name = "..".to_string();
             let _ = append_dir_entry("root", &self_link, &state);
+        }
+
+        if let Err(create_error) = fs::File::create_new("logs") {
+            if create_error.kind() != io::ErrorKind::AlreadyExists {
+                panic!("Could not create logs file");
+            }
         }
 
     }

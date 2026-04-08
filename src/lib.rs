@@ -38,22 +38,22 @@ fn get_vpfs() -> &'static VPFS {
 impl VPFS {
     pub fn connect(listen_port: u16) -> Result<VPFS, std::io::Error> {
         let mut stream = TcpStream::connect(format!("localhost:{}", listen_port))?;
-        stream.set_nodelay(true);
-        stream.set_quickack(true);
+        _ = stream.set_nodelay(true);
+        _ =stream.set_quickack(true);
 
         // serde_bare::to_writer(&stream, &Hello::ClientHello)?;
         // Serialize message
         let buf = serde_bare::to_vec(&Hello::ClientHello)?;
         // Write length
-        stream.write_all(&(buf.len() as u64).to_be_bytes())?;
+        _ = stream.write_all(&(buf.len() as u64).to_be_bytes())?;
         // Write payload
-        stream.write_all(&buf)?;
+        _ = stream.write_all(&buf)?;
 
         let mut len_buf = [0u8; 8];
-        stream.read_exact(&mut len_buf);
+        _ = stream.read_exact(&mut len_buf);
         let len = u64::from_be_bytes(len_buf) as usize;
         let mut buf = vec![0u8; len];
-        stream.read_exact(&mut buf);
+        _ = stream.read_exact(&mut buf);
 
         // Deserialize message
         let hello_response = serde_bare::from_slice(&buf);
@@ -77,20 +77,20 @@ impl VPFS {
         let buf = serde_bare::to_vec(&req).unwrap();
 
         // Write length
-        stream.write_all(&(buf.len() as u64).to_be_bytes());
+        _ = stream.write_all(&(buf.len() as u64).to_be_bytes());
         // Write payload
-        stream.write_all(&buf);
+        _ = stream.write_all(&buf);
     }
 
     fn receive_response_async(&self, stream: &mut TcpStream) -> ClientResponse {
         // Read length
         let mut len_buf = [0u8; 8];
-        stream.read_exact(&mut len_buf);
+        _ = stream.read_exact(&mut len_buf);
         let len = u64::from_be_bytes(len_buf) as usize;
 
         // Read payload
         let mut buf = vec![0u8; len];
-        stream.read_exact(&mut buf);
+        _ = stream.read_exact(&mut buf);
 
         // Deserialize message
         let msg = serde_bare::from_slice(&buf).unwrap();
@@ -277,10 +277,10 @@ impl VPFS {
             return Err(VPFSError::FileNotOpen);
         }
 
-        let daemon_fd = client_to_daemon_fd.get(&fd).unwrap().clone();
-        let location = open_files.get(&fd).unwrap().clone();
+        let _daemon_fd = client_to_daemon_fd.get(&fd).unwrap().clone();
+        let _location = open_files.get(&fd).unwrap().clone();
 
-        let n_to_read = arg as *mut T as *mut u64;
+        let _n_to_read = arg as *mut T as *mut u64;
         
         return Ok(0);
     }
@@ -347,11 +347,13 @@ pub unsafe extern "C" fn vpfs_read_fd(
             let n = read_buf.len();
 
             // Copy into caller buffer
-            ptr::copy_nonoverlapping(
-                read_buf.as_ptr(),
-                buf,
-                n,
-            );
+            unsafe { 
+                ptr::copy_nonoverlapping(
+                    read_buf.as_ptr(),
+                    buf,
+                    n,
+                ) 
+            };
 
             n as isize
         }

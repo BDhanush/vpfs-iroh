@@ -11,13 +11,12 @@ use crate::messages::{VPFSNode,Location,CacheEntry};
 #[derive(Debug)]
 pub(crate) struct DaemonState {
     pub endpoint: Endpoint,
-    pub root: RwLock<Option<VPFSNode>>,
     pub local: VPFSNode,
-    pub connections: Mutex<HashMap<String, Arc<Mutex<Connection>>>>, // name of node -> connection
-    pub known_hosts: Mutex<Option<HashMap<String, PublicKey>>>,  // name of node -> public key
+    pub connections: Mutex<HashMap<String, Arc<Connection>>>, // name of node -> connection
+    pub known_nodes: Mutex<HashMap<String, PublicKey>>,  // name of node -> public key
     pub cache: Mutex<LruCache<Location, CacheEntry>>,
     pub max_cache_size: usize,
     pub used_cache_bytes: RwLock<usize>,
-    pub file_access_lock: RwLock<()>,
+    pub fs_access_lock: RwLock<HashMap<String, Arc<RwLock<()>>>>, // uri -> lock
     pub open_files: Mutex<HashMap<i32, File>>,
 }

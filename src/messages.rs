@@ -32,8 +32,8 @@ pub struct CacheEntry {
 #[derive(Serialize,Deserialize)]
 pub enum Hello {
     ClientHello,
-    DaemonHello,
-    RootHello(VPFSNode),
+    DaemonHello(VPFSNode),
+    InitHello(HashMap<String, PublicKey>),
 }
 
 /// Responses to Hello messages
@@ -43,7 +43,7 @@ pub enum HelloResponse {
     ClientHello(String),
     DaemonHello,
     /// node, knownhosts
-    RootHello(VPFSNode, HashMap<String, PublicKey>),
+    InitHello(HashMap<String, PublicKey>),
 }
 
 #[derive(Serialize,Deserialize,Debug,Eq,PartialEq)]
@@ -74,6 +74,7 @@ pub enum DaemonRequest {
     AppendDirectoryEntry(String, DirectoryEntry),
     /// to request for endpoint_id of node given node_name
     AddressFor(String),
+    DirStructure(),
 }
 
 /// Responses to a daemon from a daemon for requests
@@ -90,7 +91,9 @@ pub enum DaemonResponse {
     Remove(Result<(), VPFSError>),
     AppendDirectoryEntry(Result<(), VPFSError>),
     /// `endpoint_id` for node given name
-    AddressFor(Option<PublicKey>)
+    AddressFor(Option<PublicKey>),
+    DirStructureData(Vec<u8>),
+    DirStructureDone(Result<(), VPFSError>),
 }
 
 /// Requests from client to daemon
