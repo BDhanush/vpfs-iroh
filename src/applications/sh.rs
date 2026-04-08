@@ -6,7 +6,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "vpfs", about = "Virtual private file system prototype.")]
 struct Opt {
-    #[arg(short, long, default_value_t = 8080)]
+    #[arg(short, long, default_value_t = 8082)]
     port: u16,
 }
 
@@ -384,7 +384,7 @@ fn run_ls(command: Command, vpfs: Arc<VPFS>, cwd: &str) {
         let mut directory_reader = BufReader::new(&*directory_data);
         let mut read_result: Result<DirectoryEntry, serde_bare::error::Error> = serde_bare::from_reader(&mut directory_reader);
         while let Ok(entry) = read_result {
-            println!("{} {} {}", if entry.is_dir {"d"} else {"-"}, entry.name, entry.location.node_name);
+            println!("{} {} {}", if entry.is_dir {"d"} else {"-"}, entry.name, entry.location.node_name.as_deref().unwrap_or("-"));
             read_result = serde_bare::from_reader(&mut directory_reader);
         }
     }

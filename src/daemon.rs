@@ -111,7 +111,7 @@ async fn handle_client_open_file(stream: &mut TcpStream, location: Location, sta
 /// <br>
 async fn handle_client_read(stream: &mut TcpStream, location: Location, state: &Arc<DaemonState>) {
     // if file is local, read locally, else read remotely and send response back through stream
-    if location.node_name == state.local.name {
+    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
         if let Ok(buf) = read_local(&location.uri, &state.fs_access_lock) {
             send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));
             send_buf_tcp(stream, &buf);
@@ -161,14 +161,14 @@ async fn handle_client_close_file(stream: &mut TcpStream, node_name: String, fd:
 
 /// Handle client Write request
 async fn handle_client_write(stream: &mut TcpStream, location: Location, file_len: usize, state: &Arc<DaemonState>) {
-    if location.node_name == state.local.name {
+    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
         let buf = receive_buf_tcp(stream, file_len).unwrap();
         if write_local(&location.uri, &buf, &state.fs_access_lock).is_ok() {
             send_message_tcp(stream, ClientResponse::Write(Ok(file_len)));
         } else {
             send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::DoesNotExist)));
         }
-    } else if let Some(file_owner_connection) = get_connection(&location.node_name, &state).await {
+    } else if let Some(file_owner_connection) = get_connection(location.node_name.as_ref().unwrap(), &state).await {
         match file_owner_connection.open_bi().await {
             Ok((mut send, mut recv)) => {
                 
@@ -341,7 +341,7 @@ async fn main() -> Result<()> {
             }
         } else {
             let mut self_link = DirectoryEntry {
-                location: Location { node_name: state.local.name.clone(), uri: "root".to_string() },
+                location: Location { node_name: None, uri: "root".to_string() },
                 name: ".".to_string(),
                 is_dir: true
             };

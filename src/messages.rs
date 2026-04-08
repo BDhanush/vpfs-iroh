@@ -12,7 +12,7 @@ pub struct VPFSNode {
 
 #[derive(Debug,Clone,Eq,Hash,PartialEq,Serialize,Deserialize)]
 pub struct Location {
-    pub node_name: String,
+    pub node_name: Option<String>,
     pub uri: String
 }
 

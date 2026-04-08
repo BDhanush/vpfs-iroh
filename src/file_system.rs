@@ -229,7 +229,7 @@ pub async fn read_remote(location: &Location, state: &Arc<DaemonState>) -> Resul
     else {
         None
     };
-    if let Some(file_owner_connection) = get_connection(&location.node_name, state).await {
+    if let Some(file_owner_connection) = get_connection(location.node_name.as_ref().unwrap(), state).await {
         match file_owner_connection.open_bi().await {
             Ok((mut send, mut recv)) => {
                 send_message(&mut send, DaemonRequest::Read(location.uri.clone(), cache_last_update_time)).await;
@@ -264,7 +264,7 @@ pub async fn read_remote(location: &Location, state: &Arc<DaemonState>) -> Resul
     else {
         if let Some(cache_entry) =  cache_entry{
             let cache_entry_location = Location {
-                node_name: state.local.name.clone(),
+                node_name: Some(state.local.name.clone()),
                 uri: cache_entry.uri.clone()
             };
             Err(VPFSError::OnlyInCache(cache_entry_location))
@@ -286,7 +286,7 @@ pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<Daemo
         return Err(VPFSError::NotAccessible);
     };
     let new_file_location = Location {
-        node_name: at.clone(),
+        node_name: if is_dir { None } else { Some(at.clone()) },
         uri: uri
     };
     let parent_directory_location;
@@ -298,7 +298,7 @@ pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<Daemo
     } 
     else {
         parent_directory_location = Location {
-            node_name: state.local.name.clone(),
+            node_name: None,
             uri: "root".to_string()
         };
         file_name = path
@@ -390,13 +390,13 @@ pub fn open_file_local(uri: &str, open_files: &Mutex<HashMap<i32,File>>) -> io::
 }
 
 pub async fn open_file(location: Location, state: &Arc<DaemonState>) -> Result<i32, VPFSError> {
-    if location.node_name == state.local.name {
+    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
         if let Ok(fd) = open_file_local(&location.uri, &state.open_files) {
             return Ok(fd);
         }
         return Err(VPFSError::DoesNotExist);
     }
-    let file_owner_connection = get_connection(&location.node_name, state).await;
+    let file_owner_connection = get_connection(location.node_name.as_ref().unwrap(), state).await;
     if file_owner_connection.is_none() {
         return Err(VPFSError::NotAccessible);
     }
@@ -477,13 +477,13 @@ pub fn read_line_fd_local(fd: i32, open_files: &Mutex<HashMap<i32,File>>) -> io:
 }
 
 pub async fn read_fd(location: &Location, fd:i32, len:usize, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
-    if location.node_name == state.local.name {
+    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
         if let Ok(fd) = read_fd_local(fd, len, &state.open_files) {
             return Ok(fd);
         }
         return Err(VPFSError::FileNotOpen);
     }
-    let file_owner_connection = get_connection(&location.node_name, state).await;
+    let file_owner_connection = get_connection(location.node_name.as_ref().unwrap(), state).await;
     if file_owner_connection.is_none() {
         return Err(VPFSError::NotAccessible);
     }
@@ -515,13 +515,13 @@ pub async fn read_fd(location: &Location, fd:i32, len:usize, state: &Arc<DaemonS
 }
 
 pub async fn read_line_fd(location: &Location, fd:i32, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
-    if location.node_name == state.local.name {
+    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
         if let Ok(fd) = read_line_fd_local(fd, &state.open_files) {
             return Ok(fd);
         }
         return Err(VPFSError::FileNotOpen);
     }
-    let file_owner_connection = get_connection(&location.node_name, state).await;
+    let file_owner_connection = get_connection(location.node_name.as_ref().unwrap(), state).await;
     if file_owner_connection.is_none() {
         return Err(VPFSError::NotAccessible);
     }

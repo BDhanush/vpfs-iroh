@@ -296,7 +296,7 @@ impl VPFS {
         let location = open_files.get(&fd).unwrap().clone();
         
         let mut stream = self.connection.lock().unwrap();
-        self.send_request_async(&mut stream, ClientRequest::Close(location.node_name, daemon_fd));
+        self.send_request_async(&mut stream, ClientRequest::Close(location.node_name.unwrap(), daemon_fd));
         match self.receive_response_async(&mut stream) {
             ClientResponse::Close(Ok(())) => {
                 open_files.remove(&fd);
