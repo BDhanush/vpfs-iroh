@@ -23,6 +23,7 @@ use crate::remote_communication::*;
 pub fn setup_files_dir() -> bool {
     if let Err(err) = fs::create_dir("./files") {
         if err.kind() == std::io::ErrorKind::AlreadyExists {
+            std::env::set_current_dir("./files").expect("Could not cd into ./files directory");
             return false;
         }
         panic!("Could not create directory for storing files");
