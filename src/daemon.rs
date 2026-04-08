@@ -322,7 +322,7 @@ async fn main() -> Result<()> {
             panic!("Could not connect")
         }
         println!("connected to network");
-        let new_node = !setup_files_dir();
+        let new_node = setup_files_dir();
         if new_node {
             build_file_system(&connection.unwrap()).await;
         }
@@ -336,7 +336,7 @@ async fn main() -> Result<()> {
         // create logs file if it does not exist
         println!("Running as first node on vpfs");
 
-        let new_node = !setup_files_dir();
+        let new_node = setup_files_dir();
 
         if let Err(create_error) = fs::File::create_new("root") {
             if create_error.kind() != io::ErrorKind::AlreadyExists {
