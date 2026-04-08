@@ -313,7 +313,10 @@ pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<Daemo
 
     append_dir_entry(&parent_directory_location.uri, &dir_entry, state)?;
     let mut connections = state.connections.lock().unwrap();
-    for (node_name, _) in connections.iter() {
+    for (node_name, connection) in connections.iter() {
+        if connection.close_reason().is_some() {
+            continue;
+        }
         match send_and_receive(node_name, DaemonRequest::AppendDirectoryEntry(parent_directory_location.uri.clone(), dir_entry.clone()), state).await {
             Ok(DaemonResponse::AppendDirectoryEntry(result)) => result,
             Ok(_) => Err(VPFSError::Other("Bad response".to_string())),

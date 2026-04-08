@@ -323,6 +323,7 @@ async fn main() -> Result<()> {
         }
         println!("connected to network");
         let new_node = setup_files_dir();
+        println!("{new_node}");
         if new_node {
             build_file_system(&connection.unwrap()).await;
         }

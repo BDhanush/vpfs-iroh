@@ -84,6 +84,7 @@ pub async fn connect_to_network(endpoint: &Endpoint, remote_endpoint_id: PublicK
                     if let Ok(HelloResponse::InitHello(host_names)) = receive_message(&mut recv).await {
                         let mut known_nodes = state.known_nodes.lock().unwrap();
                         known_nodes.extend(host_names);
+                        known_nodes.remove(&state.local.name);
                         // println!("{:?}", known_nodes);
                     } else {
                         eprintln!("Failed to deserialize response from root node");
