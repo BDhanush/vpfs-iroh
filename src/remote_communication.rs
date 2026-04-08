@@ -70,9 +70,11 @@ pub async fn connect_to_network(endpoint: &Endpoint, remote_endpoint_id: PublicK
                     println!("Opened bi-directional stream to root node: {}", remote_endpoint_id);
                     
                     // send known nodes and receive other node's known nodes and update hashmap
-                    let local_known_nodes = state.known_nodes.lock().unwrap();
-                    let mut local_known_nodes = local_known_nodes.clone(); 
-                    local_known_nodes.insert(state.local.name.clone(), state.local.endpoint_id);
+                    let local_known_nodes = {
+                        let mut nodes = state.known_nodes.lock().unwrap().clone();
+                        nodes.insert(state.local.name.clone(), state.local.endpoint_id);
+                        nodes
+                    }; // MutexGuard dropped here, before any awaits
 
                     let msg = Hello::InitHello(local_known_nodes);
                     send_message(&mut send, msg).await;
@@ -139,18 +141,22 @@ async fn establish_connection(endpoint: &Endpoint, node: &VPFSNode) -> Option<Co
 
 /// Open connection to all known hosts and update hashmap
 pub async fn establish_connections(state: &Arc<DaemonState>){
-    let known_nodes = state.known_nodes.lock().unwrap();
-    for (node_name, node_id) in known_nodes.iter() {
-        if node_id != &state.local.endpoint_id {
-            let node = VPFSNode{name: node_name.clone(), endpoint_id: *node_id};
-            if let Some(conn) = establish_connection(&state.endpoint, &node).await{
-                state.connections.lock().unwrap().insert(node_name.clone(), Arc::new(conn));
-            } else {
-                eprintln!("Failed to establish connection to node: {}", node_name);  
-            }
+    let nodes_to_connect: Vec<(String, iroh::PublicKey)> = {
+        let known_nodes = state.known_nodes.lock().unwrap();
+        known_nodes.iter()
+            .filter(|(_, id)| *id != &state.local.endpoint_id)
+            .map(|(name, id)| (name.clone(), *id))
+            .collect()
+    }; // lock dropped before any awaits
+
+    for (node_name, node_id) in nodes_to_connect {
+        let node = VPFSNode{name: node_name.clone(), endpoint_id: node_id};
+        if let Some(conn) = establish_connection(&state.endpoint, &node).await{
+            state.connections.lock().unwrap().insert(node_name.clone(), Arc::new(conn));
+        } else {
+            eprintln!("Failed to establish connection to node: {}", node_name);
         }
     }
-    
 }
 
 /// Get a connection to a node, if it doesn't exist, try to establish it

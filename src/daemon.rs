@@ -321,11 +321,14 @@ async fn main() -> Result<()> {
         if connection.is_none() {
             panic!("Could not connect")
         }
+        println!("connected to network");
         let new_node = !setup_files_dir();
         if new_node {
             build_file_system(&connection.unwrap()).await;
         }
-        establish_connections(&state);
+        println!("built file system");
+
+        establish_connections(&state).await;
         
     } else {
         // current node is the initial node of network
