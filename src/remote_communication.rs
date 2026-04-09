@@ -167,6 +167,7 @@ pub async fn get_connection(node_name: &String, state: &Arc<DaemonState>) -> Opt
         if let Some(connection) = connections.get(node_name) {
             if connection.close_reason().is_some() {
                 connections.remove(node_name);
+                return None;
             } else {
                 return Some(connection.clone());
             }

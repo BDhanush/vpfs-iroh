@@ -107,6 +107,7 @@ async fn handle_client_open_file(stream: &mut TcpStream, file: FileEntry, state:
 async fn handle_client_read(stream: &mut TcpStream, file: FileEntry, state: &Arc<DaemonState>) {
     // if file is local, read locally, else read remotely and send response back through stream
     if file.owner == state.local.name {
+        println!("local read {}", file.uri);
         if let Ok(buf) = read_local(&file.uri, &state.file_system) {
             send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));
             send_buf_tcp(stream, &buf);
@@ -172,7 +173,6 @@ async fn handle_client_write(stream: &mut TcpStream, file: FileEntry, file_len: 
                 send_message(&mut send, DaemonRequest::Write(file.uri)).await;
                 send_message(&mut send, buf).await;
                 if let Ok(DaemonResponse::Write(write_result)) = receive_message(&mut recv).await {
-                    drop(file_owner_connection);
                     send_message_tcp(stream, ClientResponse::Write(write_result));
                 }
                 
@@ -295,6 +295,7 @@ async fn main() -> Result<()> {
         open_files: Mutex::new(HashMap::new())
     };
         
+    restore_file_system(&mut state);
     restore_cache(&mut state);
 
     let state = Arc::new(state);
@@ -315,9 +316,9 @@ async fn main() -> Result<()> {
         }
         println!("Connected to network");
         let new_node = setup_files_dir();
-        // if new_node {
-        //     build_file_system(&connection.unwrap()).await;
-        // }
+        if new_node {
+            build_file_system(&connection.unwrap(), &state).await;
+        }
         // println!("built file system");
 
         establish_connections(&state).await;

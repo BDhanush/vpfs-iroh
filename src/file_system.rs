@@ -78,33 +78,36 @@ pub fn restore_cache(state: &mut DaemonState) {
     }
 }
 
-pub fn read_local(uri: &str, file_system: &RwLock<HashMap<String, RwLock<FileEntry>>>) -> io::Result<Vec<u8>> {
-    // Outer read lock: allows concurrent reads, blocks structural changes (insert/erase)
-    let outer = file_system.read().unwrap();
-    let entry_lock = outer.values().find(|e| e.read().unwrap().uri == uri);
-    match entry_lock {
-        Some(entry_lock) => {
-            let _guard = entry_lock.read().unwrap(); // per-entry read lock
-            fs::read(uri)
+/// Restore file system from ./file_system file if it exists
+pub fn restore_file_system(state: &mut DaemonState) {
+    if let Ok(fs_file) = fs::File::open("file_system") {
+        let mut file_system = state.file_system.write().unwrap();
+        while let Ok(path) = serde_bare::from_reader::<_, String>(&fs_file) {
+            let entry: FileEntry = serde_bare::from_reader(&fs_file).unwrap();
+            file_system.insert(path, entry);
         }
-        None => Err(io::Error::from(io::ErrorKind::NotFound)),
     }
 }
 
-pub fn write_local(uri: &str, data: &Vec<u8>, file_system: &RwLock<HashMap<String, RwLock<FileEntry>>>) -> io::Result<()> {
-    // Outer read lock: allows concurrent reads to other files, blocks structural changes
+pub fn read_local(uri: &str, file_system: &RwLock<HashMap<String, FileEntry>>) -> io::Result<Vec<u8>> {
     let outer = file_system.read().unwrap();
-    let entry_lock = outer.values().find(|e| e.read().unwrap().uri == uri);
-    match entry_lock {
-        Some(entry_lock) => {
-            let _guard = entry_lock.write().unwrap(); // per-entry write lock (exclusive)
-            if fs::exists(uri)? {
-                fs::write(uri, data)
-            } else {
-                Err(io::Error::from(io::ErrorKind::NotFound))
-            }
+    if outer.values().any(|e| e.uri == uri) {
+        fs::read(uri)
+    } else {
+        Err(io::Error::from(io::ErrorKind::NotFound))
+    }
+}
+
+pub fn write_local(uri: &str, data: &Vec<u8>, file_system: &RwLock<HashMap<String, FileEntry>>) -> io::Result<()> {
+    let outer = file_system.read().unwrap();
+    if outer.values().any(|e| e.uri == uri) {
+        if fs::exists(uri)? {
+            fs::write(uri, data)
+        } else {
+            Err(io::Error::from(io::ErrorKind::NotFound))
         }
-        None => Err(io::Error::from(io::ErrorKind::NotFound)),
+    } else {
+        Err(io::Error::from(io::ErrorKind::NotFound))
     }
 }
 
@@ -125,49 +128,30 @@ pub fn create_file_with_random_uri() -> String {
     uri
 }
 
-// pub async fn build_file_system(connection: &Connection) {
-//    match connection.open_bi().await {
-//         Ok((mut send, mut recv)) => {  
-//             let msg = DaemonRequest::DirStructure();  
-//             send_message(&mut send, msg).await;
-//
-//             loop {
-//                 //TODO change it to receive only non existant files
-//                 match receive_message::<DaemonResponse>(&mut recv).await {
-//                     Ok(DaemonResponse::DirStructureData(data)) => {
-//                         let mut directory_reader = BufReader::new(&*data);
-//                         let mut read_result: Result<DirectoryEntry, serde_bare::error::Error> = serde_bare::from_reader(&mut directory_reader);
-//                         match read_result {
-//                             Ok(dir_entry) => {
-//                                 if let Err(error) = fs::File::create_new(&dir_entry.location.uri) {
-//                                     if error.kind() != io::ErrorKind::AlreadyExists {
-//                                         eprintln!("failed to create file {}",dir_entry.location.uri);
-//                                     }
-//                                 }else{
-//                                     fs::write(&dir_entry.location.uri, data);
-//                                 }
-//                             },
-//                             Err(e) => {
-//                                
-//                             },
-//                         }
-//                     },
-//                     Ok(DaemonResponse::DirStructureDone(_)) => {
-//                         break;
-//                     },
-//                     Ok(_) => {
-//                         eprintln!("Unexpected response"); 
-//                         break;
-//                     }
-//                     Err(e) => { eprintln!("Error: {}", e); break; }
-//                 }
-//             }
-//
-//         }
-//         Err(e) => eprintln!("Error opening bi-directional stream: {}", e),
-//     }
-//
-// }
+pub async fn build_file_system(connection: &Connection, state: &Arc<DaemonState>) {
+   match connection.open_bi().await {
+        Ok((mut send, mut recv)) => {
+            let msg = DaemonRequest::FileSystem;
+            send_message(&mut send, msg).await;
+
+            match receive_message::<DaemonResponse>(&mut recv).await {
+                Ok(DaemonResponse::FileSystem(data)) => {
+                    let mut file_system = state.file_system.write().unwrap();
+                    for (path, entry) in data {
+                        file_system.entry(path).or_insert(entry);
+                    }
+                },
+                Ok(_) => {
+                    eprintln!("Unexpected response");
+                }
+                Err(e) => { eprintln!("Error: {}", e); }
+            }
+
+        }
+        Err(e) => eprintln!("Error opening bi-directional stream: {}", e),
+    }
+
+}
 
 pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
     let mut cache = state.cache.lock().unwrap();
@@ -231,8 +215,14 @@ pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<V
     }
 }
 
-pub fn place_file_in_memory(file_system: &RwLock<HashMap<String, RwLock<FileEntry>>>, path: &str, new_file: FileEntry) {
-    file_system.write().unwrap().insert(path.to_string(), RwLock::new(new_file));
+pub fn place_file_in_memory(file_system: &RwLock<HashMap<String, FileEntry>>, path: &str, new_file: FileEntry) {
+    let mut fs = file_system.write().unwrap();
+    fs.insert(path.to_string(), new_file);
+    let fs_file = fs::File::create("file_system").expect("Failed to create file_system file");
+    for (path, entry) in fs.iter() {
+        serde_bare::to_writer(&fs_file, path).expect("Failed to write path to file_system file");
+        serde_bare::to_writer(&fs_file, entry).expect("Failed to write entry to file_system file");
+    }
 }
 
 pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError>{
@@ -272,7 +262,7 @@ pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<Daemo
 pub fn find(file: &str, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError> {
     let outer = state.file_system.read().unwrap();
     outer.get(file)
-        .map(|e| e.read().unwrap().clone())
+        .map(|e| e.clone())
         .ok_or(VPFSError::DoesNotExist)
 }
 
