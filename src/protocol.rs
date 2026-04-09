@@ -132,6 +132,12 @@ impl VPFSProtocol {
 
                     send_message(&mut send, DaemonResponse::AddressFor(addr)).await;
                 }
+                Ok(DaemonRequest::FileSystem) => {
+                    let file_system = self.state.file_system.read().unwrap();
+                    let data = file_system.clone();
+                    drop(file_system);
+                    send_message(&mut send, DaemonResponse::FileSystem(data)).await;
+                }
                 Ok(_) => eprintln!("Unexpected message from {remote_id}"),
                 Err(e) => eprintln!("Error receiving message from {remote_id}: {:?}", e),
             }
