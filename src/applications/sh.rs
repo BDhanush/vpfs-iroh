@@ -31,8 +31,8 @@ enum PipeableCommand {
 
 impl Command {
 
-    fn forward_reads<T: Write>(location: Location, mut pipe: T, vpfs: Arc<VPFS>) {
-        match vpfs.read(location){
+    fn forward_reads<T: Write>(file: FileEntry, mut pipe: T, vpfs: Arc<VPFS>) {
+        match vpfs.read(file){
             Ok(data) => {
                 match pipe.write_all(&data) {
                     Ok(_bytes_writen) => {},
@@ -41,14 +41,14 @@ impl Command {
                     }
                 };
             }
-            Err(VPFSError::OnlyInCache(cache_location)) => {
+            Err(VPFSError::OnlyInCache(cache_file_entry)) => {
                 let mut buf = String::new();
                 loop {
                     println!("File only available in cache. Use cached versoin? (y or n)");
                     io::stdin().read_line(&mut buf).unwrap();
                     match buf.trim() {
                         "y" => {
-                            Command::forward_reads(cache_location, pipe, vpfs);
+                            Command::forward_reads(cache_file_entry, pipe, vpfs);
                             break;
                         }
                         "n" => break,
@@ -77,7 +77,7 @@ impl Command {
     pub fn spawn(self, vpfs: Arc<VPFS>) -> io::Result<process::Child> {
         let mut process_command = process::Command::new(&self.program);
 
-        let mut stdin_location: Option<Location> = None;
+        let mut stdin_file_entry: Option<FileEntry> = None;
         let mut stdout_file: Option<String> = None;
         let mut stderr_file: Option<String> = None;
 
@@ -86,25 +86,9 @@ impl Command {
             RedirectType::NoRedirect => {},
             RedirectType::File(stdin_file) => {
                 match vpfs.find(stdin_file.as_str()) {
-                    Ok(directory_entry) =>  {
-                        stdin_location = Some(directory_entry.location);
+                    Ok(file_entry) =>  {
+                        stdin_file_entry = Some(file_entry);
                     },
-                    Err(VPFSError::CacheNeededForTraversal(directory_entry)) => {
-                        let mut buf = String::new();
-                        loop {
-                            println!("Cache needed for directory travesal. Continue? (y or n)");
-                            io::stdin().read_line(&mut buf).unwrap();
-                            match buf.trim() {
-                                "y" => {
-                                    stdin_location = Some(directory_entry.location);
-                                    break;
-                                }
-                                "n" => return Err(io::Error::from(io::ErrorKind::NotFound)),
-                                _ => continue,
-                            }
-                        }
-
-                    }
                     _ => {
                         println!("Could not locate {:?}", stdin_file);
                         return Err(io::Error::from(io::ErrorKind::NotFound));
@@ -149,28 +133,28 @@ impl Command {
         if let Ok(mut child) = fork_ret {
 
             // Spawn thread for forwarding stdin to VPFS as needed
-            if let Some(stdin_location) = stdin_location {
+            if let Some(stdin_file_entry) = stdin_file_entry {
                 let vpfs_clone = vpfs.clone();
                 thread::spawn (move || {
-                    Command::forward_reads(stdin_location,child.stdin.take().unwrap(), vpfs_clone);
+                    Command::forward_reads(stdin_file_entry,child.stdin.take().unwrap(), vpfs_clone);
                 });
                 child.stdin = None;
             }
 
             // Spawn thread for forwarding stdout to VPFS as needed
-            if let Some(stdout_location) = stdout_file {
+            if let Some(stdout_file) = stdout_file {
                 let vpfs_clone = vpfs.clone();
                 thread::spawn (move || {
-                    Command::forward_writes(stdout_location, child.stdout.take().unwrap(), vpfs_clone);
+                    Command::forward_writes(stdout_file, child.stdout.take().unwrap(), vpfs_clone);
                 });
                 child.stdout = None;
             }
 
             // Spawn thread for forwarding stderr to VPFS as needed
-            if let Some(stderr_location) = stderr_file {
+            if let Some(stderr_file) = stderr_file {
                 let vpfs_clone = vpfs.clone();
                 thread::spawn(move || {
-                    Command::forward_writes(stderr_location, child.stderr.take().unwrap(), vpfs_clone);
+                    Command::forward_writes(stderr_file, child.stderr.take().unwrap(), vpfs_clone);
                 });
                 child.stderr = None
             }
@@ -338,60 +322,26 @@ fn parse_command(command_string: &str, cwd: &str) -> Option<PipeableCommand> {
     }
 }
 
-fn run_cd(command: Command, vpfs: Arc<VPFS>, cwd: &mut String){
-    if let Some(path) = command.args.first() {
-        let full_path = file_name_to_full_path(cwd, path);
-        if full_path == "" {
-            *cwd = String::from("");
-        }
-        else if let Ok(directory_entry) = vpfs.find(&full_path) {
-            if directory_entry.is_dir {
-                *cwd = full_path.clone();
-            }
-            else {
-                println!("{} is not a directory", path);
-            }
-        }
-        else {
-            println!("Could not find {}", path);
-        }
-    }
-    else {
-        println!("Error no path specified");
-    }
-}
-
-fn run_mkdir(command: Command, vpfs: Arc<VPFS>, cwd: &str) {
-    if let Some(path) = command.args.first() {
-        let full_path = file_name_to_full_path(cwd, path);
-        if vpfs.mkdir(&full_path, vpfs.local.clone()).is_err(){
-            println!("Could not make directory {}", path);
-        };
-    }
-    else {
-        println!("Error no path specified");
-    }
-}
-
-fn run_ls(command: Command, vpfs: Arc<VPFS>, cwd: &str) {
-    let fetch_result = if cwd == "" {
-        vpfs.fetch(".")
-    }
-    else {
-        vpfs.fetch(cwd)
-    };
-    if let Ok(directory_data) = fetch_result {
-        let mut directory_reader = BufReader::new(&*directory_data);
-        let mut read_result: Result<DirectoryEntry, serde_bare::error::Error> = serde_bare::from_reader(&mut directory_reader);
-        while let Ok(entry) = read_result {
-            println!("{} {} {}", if entry.is_dir {"d"} else {"-"}, entry.name, entry.location.node_name.as_deref().unwrap_or("-"));
-            read_result = serde_bare::from_reader(&mut directory_reader);
-        }
-    }
-    else {
-        println!("Failed to read directory data for {}", cwd);
-    }
-}
+//TODO
+// fn run_ls(command: Command, vpfs: Arc<VPFS>, cwd: &str) {
+//     let fetch_result = if cwd == "" {
+//         vpfs.fetch(".")
+//     }
+//     else {
+//         vpfs.fetch(cwd)
+//     };
+//     if let Ok(directory_data) = fetch_result {
+//         let mut directory_reader = BufReader::new(&*directory_data);
+//         let mut read_result: Result<DirectoryEntry, serde_bare::error::Error> = serde_bare::from_reader(&mut directory_reader);
+//         while let Ok(entry) = read_result {
+//             println!("{} {} {}", if entry.is_dir {"d"} else {"-"}, entry.name, entry.location.node_name.as_deref().unwrap_or("-"));
+//             read_result = serde_bare::from_reader(&mut directory_reader);
+//         }
+//     }
+//     else {
+//         println!("Failed to read directory data for {}", cwd);
+//     }
+// }
 
 fn run_cat(vpfs: Arc<VPFS>, command: &Command, cwd: &str) {
     for file_name in &command.args {
@@ -410,10 +360,10 @@ fn run_nonpiped_command(command: Command, vpfs: Arc<VPFS>, cwd: &mut String) {
     match program.as_str() {
         // Built-ins
         "exit" => exit(0),
-        "cd" => run_cd(command, vpfs, cwd),
+        // "cd" => run_cd(command, vpfs, cwd),
         "pwd" => println!("/{}", cwd),        
-        "mkdir" => run_mkdir(command, vpfs, cwd),
-        "ls" => run_ls(command, vpfs, cwd),
+        // "mkdir" => run_mkdir(command, vpfs, cwd),
+        // "ls" => run_ls(command, vpfs, cwd),
         // "cat" => run_cat(vpfs.clone(), &command, cwd),
         // Normal binaries
         _ => {

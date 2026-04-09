@@ -13,7 +13,7 @@ use rand::rand_core::le;
 
 use std::sync::MutexGuard;
 
-use crate::{messages::*};
+use crate::{file_system, messages::*};
 
 use crate::state::DaemonState;
 
@@ -32,125 +32,79 @@ pub fn setup_files_dir() -> bool {
     true
 }
 
-// pub fn add_cache_entry(location: &Location, data: &[u8], cache: &mut MutexGuard<LruCache<Location, CacheEntry>>, state: &Arc<DaemonState>) {
-//     if let Some(cache_entry) = cache.get(&location) {
-//         fs::write(&cache_entry.uri, &data);
-//     }
-//     else {
-//         let new_cache_entry = CacheEntry {
-//             uri: create_file_with_random_uri(),
-//         };
-//         fs::write(&new_cache_entry.uri, &data);
-//         cache.put(location.clone(), new_cache_entry);
-//     };
-//     let mut used_cache = state.used_cache_bytes.write().unwrap();
-//     *used_cache += data.len();
-//     // Evict elements to make room in cache
-//     while *used_cache > state.max_cache_size {
-//         if let Some((_, lru_entry)) = cache.pop_lru() {
-//             let file_size = fs::metadata(&lru_entry.uri).expect("Cache entry missing backing file").len();
-//             fs::remove_file(&lru_entry.uri).unwrap();
-//             *used_cache -= file_size as usize;
-//         }
-//         else {
-//             break;
-//         }
-//     }
-//     let cache_file = fs::File::create("cache").expect("Failed to create cache file");
-//     serde_bare::to_writer(&cache_file, &state.root).expect("Failed to save root node to file");
-//     serde_bare::to_writer(&cache_file, &*used_cache).expect("Failed to save cahce size to file");
-//     for (key, value) in cache.iter() {
-//         serde_bare::to_writer(&cache_file, key).expect("Could not write cache entry to file");
-//         serde_bare::to_writer(&cache_file, value).expect("Could not write cache entry to file");
-//     }
-// }
+pub fn add_cache_entry(file: &FileEntry, data: &[u8], cache: &mut MutexGuard<LruCache<FileEntry, CacheEntry>>, state: &Arc<DaemonState>) {
+    if let Some(cache_entry) = cache.get(&file) {
+        fs::write(&cache_entry.uri, &data);
+    }
+    else {
+        let new_cache_entry = CacheEntry {
+            uri: create_file_with_random_uri(),
+        };
+        fs::write(&new_cache_entry.uri, &data);
+        cache.put(file.clone(), new_cache_entry);
+    };
+    let mut used_cache = state.used_cache_bytes.write().unwrap();
+    *used_cache += data.len();
+    // Evict elements to make room in cache
+    while *used_cache > state.max_cache_size {
+        if let Some((_, lru_entry)) = cache.pop_lru() {
+            let file_size = fs::metadata(&lru_entry.uri).expect("Cache entry missing backing file").len();
+            fs::remove_file(&lru_entry.uri).unwrap();
+            *used_cache -= file_size as usize;
+        }
+        else {
+            break;
+        }
+    }
+    let cache_file = fs::File::create("cache").expect("Failed to create cache file");
+    serde_bare::to_writer(&cache_file, &*used_cache).expect("Failed to save cahce size to file");
+    for (key, value) in cache.iter() {
+        serde_bare::to_writer(&cache_file, key).expect("Could not write cache entry to file");
+        serde_bare::to_writer(&cache_file, value).expect("Could not write cache entry to file");
+    }
+}
 
 
 /// Restore cache from ./cache file if it exists
-// pub fn restore_cache(state: &mut DaemonState) {
-//     if let Ok(cache_file) = fs::File::open("cache") {
-//         let mut cache = state.cache.lock().unwrap();
-//         state.root = serde_bare::from_reader(&cache_file).expect("Failed to readed from cache file");
-//         state.used_cache_bytes = serde_bare::from_reader(&cache_file).expect("Failed to readed from cache file");
-//         while let Ok(key) = serde_bare::from_reader::<_, Location>(&cache_file) {
-//             let value = serde_bare::from_reader(&cache_file).unwrap();
-//             cache.put(key.clone(), value);
-//             cache.demote(&key);
-//         }
-//     }
-// }
-
-pub fn get_file_lock(uri: &str, fs_access_lock: &RwLock<HashMap<String, Arc<RwLock<()>>>>) -> Arc<RwLock<()>> {
-    let mut file_lock = fs_access_lock.read().unwrap().get(uri).cloned();
-    if file_lock.is_none() {
-        let new_lock = Arc::new(RwLock::new(()));
-        fs_access_lock.write().unwrap().insert(uri.to_string(), new_lock.clone());
-        file_lock = Some(new_lock);
-    }
-    file_lock.unwrap()
-}
-
-pub fn search_directory_with_reader<T: Read>(file_name: &str, directory_reader: &mut T) -> Result<DirectoryEntry, VPFSError> {
-    let mut read_result: Result<DirectoryEntry, serde_bare::error::Error> = serde_bare::from_reader(&mut *directory_reader);
-    let mut dir_entry = Err(VPFSError::DoesNotExist);
-    while let Ok(entry) = read_result {
-        if entry.name == file_name{
-            dir_entry = Ok(entry);
-            break;
-        }
-        read_result = serde_bare::from_reader(&mut *directory_reader);
-    }
-    dir_entry
-}
-
-/// Assumes caller hold file lock
-fn search_directory_with_lock(file_name: &str, directory_uri: &str) -> Result<DirectoryEntry, VPFSError> {
-    let mut directory_file = fs::File::open(directory_uri).unwrap();
-    search_directory_with_reader(file_name, &mut directory_file)
-}
-
-fn search_directory(file_name: &str, directory_uri: &str, state: &Arc<DaemonState>) -> Result<DirectoryEntry, VPFSError> {
-    let _file_lock = get_file_lock(directory_uri, &state.fs_access_lock);
-    _file_lock.read().unwrap();
-
-    search_directory_with_lock(file_name, directory_uri)
-}
-
-pub fn append_dir_entry(directory: &str, new_entry: &DirectoryEntry, state: &Arc<DaemonState>) -> Result<(), VPFSError>{
-    // Check if the directory entry already exists
-    if let Ok(existing_dir_entry) = search_directory(&new_entry.name, &directory, &state) {
-        Err(VPFSError::AlreadyExists(existing_dir_entry))
-    }
-    else {
-        let file_lock = get_file_lock(directory, &state.fs_access_lock);
-        file_lock.write().unwrap();
-        let dir_file = fs::OpenOptions::new().append(true).open(directory).unwrap();
-        serde_bare::to_writer(dir_file, &new_entry).unwrap();
-        Ok(())
-    }
-}
-
-pub fn read_local(uri: &str, fs_access_lock: &RwLock<HashMap<String, Arc<RwLock<()>>>>) -> io::Result<Vec<u8>>{
-    let fs_lock = get_file_lock(uri, fs_access_lock);
-    fs_lock.read().unwrap();
-    match fs::read(uri) {
-        Ok(data) => Ok(data),
-        Err(e) => {
-            fs_access_lock.write().unwrap().remove(uri);
-            Err(e)
+pub fn restore_cache(state: &mut DaemonState) {
+    if let Ok(cache_file) = fs::File::open("cache") {
+        let mut cache = state.cache.lock().unwrap();
+        state.used_cache_bytes = serde_bare::from_reader(&cache_file).expect("Failed to readed from cache file");
+        while let Ok(key) = serde_bare::from_reader::<_, FileEntry>(&cache_file) {
+            let value = serde_bare::from_reader(&cache_file).unwrap();
+            cache.put(key.clone(), value);
+            cache.demote(&key);
         }
     }
 }
 
-pub fn write_local(uri: &str,  data: &Vec<u8>, fs_access_lock: &RwLock<HashMap<String, Arc<RwLock<()>>>>) -> io::Result<()>{
-    let fs_lock = get_file_lock(uri, fs_access_lock);
-    fs_lock.write().unwrap();
-    if fs::exists(uri)? {
-        fs::write(uri, data)
+pub fn read_local(uri: &str, file_system: &RwLock<HashMap<String, RwLock<FileEntry>>>) -> io::Result<Vec<u8>> {
+    // Outer read lock: allows concurrent reads, blocks structural changes (insert/erase)
+    let outer = file_system.read().unwrap();
+    let entry_lock = outer.values().find(|e| e.read().unwrap().uri == uri);
+    match entry_lock {
+        Some(entry_lock) => {
+            let _guard = entry_lock.read().unwrap(); // per-entry read lock
+            fs::read(uri)
+        }
+        None => Err(io::Error::from(io::ErrorKind::NotFound)),
     }
-    else {
-        fs_access_lock.write().unwrap().remove(uri);
-        Err(io::Error::from(io::ErrorKind::NotFound))
+}
+
+pub fn write_local(uri: &str, data: &Vec<u8>, file_system: &RwLock<HashMap<String, RwLock<FileEntry>>>) -> io::Result<()> {
+    // Outer read lock: allows concurrent reads to other files, blocks structural changes
+    let outer = file_system.read().unwrap();
+    let entry_lock = outer.values().find(|e| e.read().unwrap().uri == uri);
+    match entry_lock {
+        Some(entry_lock) => {
+            let _guard = entry_lock.write().unwrap(); // per-entry write lock (exclusive)
+            if fs::exists(uri)? {
+                fs::write(uri, data)
+            } else {
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            }
+        }
+        None => Err(io::Error::from(io::ErrorKind::NotFound)),
     }
 }
 
@@ -171,54 +125,54 @@ pub fn create_file_with_random_uri() -> String {
     uri
 }
 
-pub async fn build_file_system(connection: &Connection) {
-   match connection.open_bi().await {
-        Ok((mut send, mut recv)) => {  
-            let msg = DaemonRequest::DirStructure();  
-            send_message(&mut send, msg).await;
+// pub async fn build_file_system(connection: &Connection) {
+//    match connection.open_bi().await {
+//         Ok((mut send, mut recv)) => {  
+//             let msg = DaemonRequest::DirStructure();  
+//             send_message(&mut send, msg).await;
+//
+//             loop {
+//                 //TODO change it to receive only non existant files
+//                 match receive_message::<DaemonResponse>(&mut recv).await {
+//                     Ok(DaemonResponse::DirStructureData(data)) => {
+//                         let mut directory_reader = BufReader::new(&*data);
+//                         let mut read_result: Result<DirectoryEntry, serde_bare::error::Error> = serde_bare::from_reader(&mut directory_reader);
+//                         match read_result {
+//                             Ok(dir_entry) => {
+//                                 if let Err(error) = fs::File::create_new(&dir_entry.location.uri) {
+//                                     if error.kind() != io::ErrorKind::AlreadyExists {
+//                                         eprintln!("failed to create file {}",dir_entry.location.uri);
+//                                     }
+//                                 }else{
+//                                     fs::write(&dir_entry.location.uri, data);
+//                                 }
+//                             },
+//                             Err(e) => {
+//                                
+//                             },
+//                         }
+//                     },
+//                     Ok(DaemonResponse::DirStructureDone(_)) => {
+//                         break;
+//                     },
+//                     Ok(_) => {
+//                         eprintln!("Unexpected response"); 
+//                         break;
+//                     }
+//                     Err(e) => { eprintln!("Error: {}", e); break; }
+//                 }
+//             }
+//
+//         }
+//         Err(e) => eprintln!("Error opening bi-directional stream: {}", e),
+//     }
+//
+// }
 
-            loop {
-                //TODO change it to receive only non existant files
-                match receive_message::<DaemonResponse>(&mut recv).await {
-                    Ok(DaemonResponse::DirStructureData(data)) => {
-                        let mut directory_reader = BufReader::new(&*data);
-                        let mut read_result: Result<DirectoryEntry, serde_bare::error::Error> = serde_bare::from_reader(&mut directory_reader);
-                        match read_result {
-                            Ok(dir_entry) => {
-                                if let Err(error) = fs::File::create_new(&dir_entry.location.uri) {
-                                    if error.kind() != io::ErrorKind::AlreadyExists {
-                                        eprintln!("failed to create file {}",dir_entry.location.uri);
-                                    }
-                                }else{
-                                    fs::write(&dir_entry.location.uri, data);
-                                }
-                            },
-                            Err(e) => {
-                                
-                            },
-                        }
-                    },
-                    Ok(DaemonResponse::DirStructureDone(_)) => {
-                        break;
-                    },
-                    Ok(_) => {
-                        eprintln!("Unexpected response"); 
-                        break;
-                    }
-                    Err(e) => { eprintln!("Error: {}", e); break; }
-                }
-            }
-
-        }
-        Err(e) => eprintln!("Error opening bi-directional stream: {}", e),
-    }
-
-}
-
-pub async fn read_remote(location: &Location, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
+pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
     let mut cache = state.cache.lock().unwrap();
-    let cache_entry = cache.get(&location);
-    let _fs_lock = state.fs_access_lock.write().unwrap();
+    let cache_entry = cache.get(&file);
+    let _fs_lock = state.file_system.read().unwrap();
     let cache_last_update_time = if let Some(cache_entry) = cache_entry {
         if let Ok(file_data) = fs::metadata(&cache_entry.uri) {
             file_data.modified().ok()
@@ -230,17 +184,17 @@ pub async fn read_remote(location: &Location, state: &Arc<DaemonState>) -> Resul
     else {
         None
     };
-    if let Some(file_owner_connection) = get_connection(location.node_name.as_ref().unwrap(), state).await {
+    if let Some(file_owner_connection) = get_connection(&file.owner, state).await {
         match file_owner_connection.open_bi().await {
             Ok((mut send, mut recv)) => {
-                send_message(&mut send, DaemonRequest::Read(location.uri.clone(), cache_last_update_time)).await;
+                send_message(&mut send, DaemonRequest::Read(file.uri.clone(), cache_last_update_time)).await;
                 
                 match receive_message(&mut recv).await {
                     Ok(DaemonResponse::Read(Ok(()))) => {
 
                         let buf = receive_message::<Vec<u8>>(&mut recv).await.unwrap();
 
-                        // add_cache_entry(location, &buf, &mut cache, state);
+                        add_cache_entry(&file, &buf, &mut cache, state);
 
                         return Ok(buf)
                     },
@@ -257,18 +211,19 @@ pub async fn read_remote(location: &Location, state: &Arc<DaemonState>) -> Resul
                 }                
             }
             Err(e) => {
-                eprintln!("✗ Error opening bi-directional stream: {}", e);
+                eprintln!("Error opening bi-directional stream: {}", e);
                 return Err(VPFSError::NotAccessible);
             }
         }
     }
     else {
         if let Some(cache_entry) =  cache_entry{
-            let cache_entry_location = Location {
-                node_name: Some(state.local.name.clone()),
-                uri: cache_entry.uri.clone()
+            let cache_entry_file = FileEntry {
+                owner: state.local.name.clone(),
+                uri: cache_entry.uri.clone(),
+                name: file.name.clone()
             };
-            Err(VPFSError::OnlyInCache(cache_entry_location))
+            Err(VPFSError::OnlyInCache(cache_entry_file))
         }
         else {
             Err(VPFSError::NotAccessible)
@@ -276,7 +231,7 @@ pub async fn read_remote(location: &Location, state: &Arc<DaemonState>) -> Resul
     }
 }
 
-pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<DaemonState>) -> Result<Location, VPFSError>{
+pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError>{
     let uri = if *at == state.local.name {
         create_file_with_random_uri()
     }
@@ -286,97 +241,21 @@ pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<Daemo
     else {
         return Err(VPFSError::NotAccessible);
     };
-    let new_file_location = Location {
-        node_name: if is_dir { None } else { Some(at.clone()) },
-        uri: uri
+    let new_file = FileEntry {
+        owner: at.clone(),
+        uri: uri,
+        name: path.to_string(),
     };
-    let parent_directory_location;
-    let file_name;
-    if let Some((parent_directory, _file_name)) = path.rsplit_once('/') {
-        let parent_directory_entry = find(parent_directory, state)?;
-        parent_directory_location = parent_directory_entry.location;
-        file_name = _file_name;
-    } 
-    else {
-        parent_directory_location = Location {
-            node_name: None,
-            uri: "root".to_string()
-        };
-        file_name = path
-    }
-    
-    let mut dir_entry = DirectoryEntry {
-        location: new_file_location.clone(),
-        name: file_name.to_string(),
-        is_dir: is_dir
-    };
-
-    append_dir_entry(&parent_directory_location.uri, &dir_entry, state)?;
-    let mut connections = state.connections.lock().unwrap();
-    for (node_name, connection) in connections.iter() {
-        if connection.close_reason().is_some() {
-            continue;
-        }
-        match send_and_receive(node_name, DaemonRequest::AppendDirectoryEntry(parent_directory_location.uri.clone(), dir_entry.clone()), state).await {
-            Ok(DaemonResponse::AppendDirectoryEntry(result)) => result,
-            Ok(_) => Err(VPFSError::Other("Bad response".to_string())),
-            Err(error) => Err(VPFSError::Other("Connection closed".to_string()))
-        };
-    }
-    // Add . and .. directory entries if new file is a directory
-    // TODO add modification to all nodes if dir
-    // TODO add to log file if dir
-    if is_dir {
-        let dot_dot_entry = DirectoryEntry {
-            location: parent_directory_location.clone(),
-            name: "..".to_string(),
-            is_dir: true,
-        };
-        dir_entry.name = ".".to_string();
-        let _ = append_dir_entry(&new_file_location.uri, &dir_entry, state);
-        let _ = append_dir_entry(&new_file_location.uri, &dot_dot_entry, state);
-        
-        for (node_name, _) in connections.iter() {
-            send_and_receive::<_, DaemonResponse>(at, DaemonRequest::AppendDirectoryEntry(new_file_location.uri.clone(), dir_entry.clone()), state).await;
-            send_and_receive::<_, DaemonResponse>(at, DaemonRequest::AppendDirectoryEntry(new_file_location.uri.clone(), dot_dot_entry.clone()), state).await;
-        }
-    }
-    
-    // else if let Err(error) = success {
-    //     if *at == state.local.name {
-    //         fs::remove_file(&new_file_location.uri);
-    //     }
-    //     else {
-    //         send_and_receive::<_, DaemonResponse>(at, DaemonRequest::Remove(new_file_location.uri), state).await;
-    //     }
-    //     return Err(error);
-    // }
-    
-    Ok(new_file_location)
+    state.file_system.write().unwrap().insert(path.to_string(), RwLock::new(new_file.clone()));
+    Ok(new_file)
 }
 
 
-pub fn find(file: &str, state: &Arc<DaemonState>) -> Result<DirectoryEntry, VPFSError> {
-    
-    // Directory structure is replicated across all nodes, so every directory
-    // component is always available locally. Walk the path iteratively.
-    let mut current_dir_uri = "root".to_string();
-    let mut components = file.split('/').filter(|s| !s.is_empty()).peekable();
-
-    loop {
-        let component = components.next().ok_or(VPFSError::DoesNotExist)?;
-        let entry = search_directory(component, &current_dir_uri, state)?;
-
-        if components.peek().is_none() {
-            return Ok(entry);
-        }
-
-        if !entry.is_dir {
-            return Err(VPFSError::NotADirectory);
-        }
-        current_dir_uri = entry.location.uri;
-    }
-    
+pub fn find(file: &str, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError> {
+    let outer = state.file_system.read().unwrap();
+    outer.get(file)
+        .map(|e| e.read().unwrap().clone())
+        .ok_or(VPFSError::DoesNotExist)
 }
 
 pub fn open_file_local(uri: &str, open_files: &Mutex<HashMap<i32,File>>) -> io::Result<i32> {
@@ -393,21 +272,21 @@ pub fn open_file_local(uri: &str, open_files: &Mutex<HashMap<i32,File>>) -> io::
     }
 }
 
-pub async fn open_file(location: Location, state: &Arc<DaemonState>) -> Result<i32, VPFSError> {
-    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
-        if let Ok(fd) = open_file_local(&location.uri, &state.open_files) {
+pub async fn open_file(file: FileEntry, state: &Arc<DaemonState>) -> Result<i32, VPFSError> {
+    if file.owner == state.local.name {
+        if let Ok(fd) = open_file_local(&file.uri, &state.open_files) {
             return Ok(fd);
         }
         return Err(VPFSError::DoesNotExist);
     }
-    let file_owner_connection = get_connection(location.node_name.as_ref().unwrap(), state).await;
+    let file_owner_connection = get_connection(&file.owner, state).await;
     if file_owner_connection.is_none() {
         return Err(VPFSError::NotAccessible);
     }
     let file_owner_connection = file_owner_connection.unwrap();
     match file_owner_connection.open_bi().await {
         Ok((mut send, mut recv)) => {
-            send_message(&mut send, DaemonRequest::Open(location.uri.clone())).await;
+            send_message(&mut send, DaemonRequest::Open(file.uri.clone())).await;
             
             match receive_message(&mut recv).await {
                 Ok(DaemonResponse::Open(fd_result)) => {
@@ -420,7 +299,7 @@ pub async fn open_file(location: Location, state: &Arc<DaemonState>) -> Result<i
             }                
         }
         Err(e) => {
-            eprintln!("✗ Error opening bi-directional stream: {}", e);
+            eprintln!("Error opening bi-directional stream: {}", e);
             return Err(VPFSError::NotAccessible);
         }
         
@@ -480,14 +359,14 @@ pub fn read_line_fd_local(fd: i32, open_files: &Mutex<HashMap<i32,File>>) -> io:
     Ok(buf)
 }
 
-pub async fn read_fd(location: &Location, fd:i32, len:usize, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
-    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
+pub async fn read_fd(file: &FileEntry, fd:i32, len:usize, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
+    if file.owner == state.local.name {
         if let Ok(fd) = read_fd_local(fd, len, &state.open_files) {
             return Ok(fd);
         }
         return Err(VPFSError::FileNotOpen);
     }
-    let file_owner_connection = get_connection(location.node_name.as_ref().unwrap(), state).await;
+    let file_owner_connection = get_connection(&file.owner, state).await;
     if file_owner_connection.is_none() {
         return Err(VPFSError::NotAccessible);
     }
@@ -511,21 +390,21 @@ pub async fn read_fd(location: &Location, fd:i32, len:usize, state: &Arc<DaemonS
             }
         }
         Err(e) => {
-            eprintln!("✗ Error opening bi-directional stream: {}", e);
+            eprintln!("Error opening bi-directional stream: {}", e);
             return Err(VPFSError::NotAccessible);
         }
         
     }
 }
 
-pub async fn read_line_fd(location: &Location, fd:i32, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
-    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
+pub async fn read_line_fd(file: &FileEntry, fd:i32, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
+    if file.owner == state.local.name {
         if let Ok(fd) = read_line_fd_local(fd, &state.open_files) {
             return Ok(fd);
         }
         return Err(VPFSError::FileNotOpen);
     }
-    let file_owner_connection = get_connection(location.node_name.as_ref().unwrap(), state).await;
+    let file_owner_connection = get_connection(&file.owner, state).await;
     if file_owner_connection.is_none() {
         return Err(VPFSError::NotAccessible);
     }
@@ -549,7 +428,7 @@ pub async fn read_line_fd(location: &Location, fd:i32, state: &Arc<DaemonState>)
             }
         }
         Err(e) => {
-            eprintln!("✗ Error opening bi-directional stream: {}", e);
+            eprintln!("Error opening bi-directional stream: {}", e);
             return Err(VPFSError::NotAccessible);
         }
         
@@ -592,7 +471,7 @@ pub async fn close_file(node_name: &String, fd: i32, state: &Arc<DaemonState>) -
             }                
         }
         Err(e) => {
-            eprintln!("✗ Error opening bi-directional stream: {}", e);
+            eprintln!("Error opening bi-directional stream: {}", e);
             return Err(VPFSError::NotAccessible);
         }
         

@@ -41,7 +41,7 @@ struct Opt {
     listen_port: u16,
 
     #[arg(short, long)]
-    root_id: Option<PublicKey>,
+    remote_id: Option<PublicKey>,
 
     //Maximum cache size in bytes
     #[arg(short, long, default_value_t = 1 << 16)]
@@ -98,28 +98,23 @@ async fn handle_client_place(stream: &mut TcpStream, file: &str, node_name: Stri
     send_message_tcp(stream, ClientResponse::Place(place_file(file, &node_name, false, state).await));
 }
 
-/// Handle client Mkdir request
-async fn handle_client_mkdir(stream: &mut TcpStream, directory: &str, node_name: String, state: &Arc<DaemonState>) {
-    send_message_tcp(stream, ClientResponse::Mkdir(place_file(directory, &node_name, true, state).await));
-}
-
-async fn handle_client_open_file(stream: &mut TcpStream, location: Location, state: &Arc<DaemonState>) {
-    send_message_tcp(stream, ClientResponse::Open(open_file(location, state).await));    
+async fn handle_client_open_file(stream: &mut TcpStream, file: FileEntry, state: &Arc<DaemonState>) {
+    send_message_tcp(stream, ClientResponse::Open(open_file(file, state).await));    
 }
 
 /// Handle client Read request
 /// <br>
-async fn handle_client_read(stream: &mut TcpStream, location: Location, state: &Arc<DaemonState>) {
+async fn handle_client_read(stream: &mut TcpStream, file: FileEntry, state: &Arc<DaemonState>) {
     // if file is local, read locally, else read remotely and send response back through stream
-    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
-        if let Ok(buf) = read_local(&location.uri, &state.fs_access_lock) {
+    if file.owner == state.local.name {
+        if let Ok(buf) = read_local(&file.uri, &state.file_system) {
             send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));
             send_buf_tcp(stream, &buf);
         } else {
             send_message_tcp(stream, ClientResponse::Read(Err(VPFSError::DoesNotExist)));
         }
     } else  {
-        match read_remote(&location, state).await {
+        match read_remote(&file, state).await {
             Ok(buf) => {
                 send_message_tcp(stream, ClientResponse::Read(Ok(buf.len())));                    
                 send_buf_tcp(stream, &buf);
@@ -131,8 +126,8 @@ async fn handle_client_read(stream: &mut TcpStream, location: Location, state: &
     }
 }
 
-async fn handle_client_read_fd(stream: &mut TcpStream, location: Location, fd: i32, len: usize, state: &Arc<DaemonState>) {
-    match read_fd(&location, fd, len, state).await {
+async fn handle_client_read_fd(stream: &mut TcpStream, file: FileEntry, fd: i32, len: usize, state: &Arc<DaemonState>) {
+    match read_fd(&file, fd, len, state).await {
         Ok(buf) => {
             send_message_tcp(stream, ClientResponse::ReadFd(Ok(buf.len())));                    
             send_buf_tcp(stream, &buf);
@@ -143,8 +138,8 @@ async fn handle_client_read_fd(stream: &mut TcpStream, location: Location, fd: i
     }
 }
 
-async fn handle_client_read_line_fd(stream: &mut TcpStream, location: Location, fd: i32, state: &Arc<DaemonState>) {
-    match read_line_fd(&location, fd, state).await {
+async fn handle_client_read_line_fd(stream: &mut TcpStream, file: FileEntry, fd: i32, state: &Arc<DaemonState>) {
+    match read_line_fd(&file, fd, state).await {
         Ok(buf) => {
             send_message_tcp(stream, ClientResponse::ReadLineFd(Ok(buf.len())));                    
             send_buf_tcp(stream, &buf);            
@@ -160,21 +155,21 @@ async fn handle_client_close_file(stream: &mut TcpStream, node_name: String, fd:
 }
 
 /// Handle client Write request
-async fn handle_client_write(stream: &mut TcpStream, location: Location, file_len: usize, state: &Arc<DaemonState>) {
-    if location.node_name.is_none() || location.node_name.as_deref() == Some(&state.local.name) {
+async fn handle_client_write(stream: &mut TcpStream, file: FileEntry, file_len: usize, state: &Arc<DaemonState>) {
+    if file.owner == state.local.name {
         let buf = receive_buf_tcp(stream, file_len).unwrap();
-        if write_local(&location.uri, &buf, &state.fs_access_lock).is_ok() {
+        if write_local(&file.uri, &buf, &state.file_system).is_ok() {
             send_message_tcp(stream, ClientResponse::Write(Ok(file_len)));
         } else {
             send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::DoesNotExist)));
         }
-    } else if let Some(file_owner_connection) = get_connection(location.node_name.as_ref().unwrap(), &state).await {
+    } else if let Some(file_owner_connection) = get_connection(&file.owner, &state).await {
         match file_owner_connection.open_bi().await {
             Ok((mut send, mut recv)) => {
                 
                 let buf = receive_buf_tcp(stream, file_len).unwrap();
 
-                send_message(&mut send, DaemonRequest::Write(location.uri)).await;
+                send_message(&mut send, DaemonRequest::Write(file.uri)).await;
                 send_message(&mut send, buf).await;
                 if let Ok(DaemonResponse::Write(write_result)) = receive_message(&mut recv).await {
                     drop(file_owner_connection);
@@ -182,7 +177,7 @@ async fn handle_client_write(stream: &mut TcpStream, location: Location, file_le
                 }
                 
             }
-            Err(e) => eprintln!("✗ Error opening bi-directional stream: {}", e),
+            Err(e) => eprintln!("Error opening bi-directional stream: {}", e),
         }
     } else {
         send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::NotAccessible)));
@@ -202,26 +197,23 @@ fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: &Han
                 Ok(ClientRequest::Place(file, node_name )) => {
                     handle_client_place(&mut stream, &file, node_name,  &state).await;
                 }
-                Ok(ClientRequest::Mkdir(directory, node_name )) => {
-                    handle_client_mkdir(&mut stream, &directory, node_name, &state).await;
+                Ok(ClientRequest::Open(file)) => {
+                    handle_client_open_file(&mut stream, file, &state).await;
                 }
-                Ok(ClientRequest::Open(location)) => {
-                    handle_client_open_file(&mut stream, location, &state).await;
+                Ok(ClientRequest::ReadFd(file, fd, len)) => {
+                    handle_client_read_fd(&mut stream, file, fd, len, & state).await;
                 }
-                Ok(ClientRequest::ReadFd(location, fd, len)) => {
-                    handle_client_read_fd(&mut stream, location, fd, len, & state).await;
-                }
-                Ok(ClientRequest::ReadLineFd(location, fd)) => {
-                    handle_client_read_line_fd(&mut stream, location, fd, & state).await;
+                Ok(ClientRequest::ReadLineFd(file, fd)) => {
+                    handle_client_read_line_fd(&mut stream, file, fd, & state).await;
                 }
                 Ok(ClientRequest::Close(node_name, fd)) => {
                     handle_client_close_file(&mut stream, node_name, fd, &state).await;
                 }
-                Ok(ClientRequest::Read(location)) => {
-                    handle_client_read(&mut stream, location, &state).await;
+                Ok(ClientRequest::Read(file)) => {
+                    handle_client_read(&mut stream, file, &state).await;
                 }
-                Ok(ClientRequest::Write(location,len)) => {
-                    handle_client_write(&mut stream, location, len, &state).await;
+                Ok(ClientRequest::Write(file,len)) => {
+                    handle_client_write(&mut stream, file, len, &state).await;
                 }
                 Err(_) => {
                     println!("Client diconnected");
@@ -298,11 +290,12 @@ async fn main() -> Result<()> {
         cache: Mutex::new(LruCache::unbounded()),
         max_cache_size: opt.cache_size,
         used_cache_bytes: RwLock::new(0),
-        fs_access_lock: RwLock::new(HashMap::new()),
+        file_system: RwLock::new(HashMap::new()),
+        log: Vec::new(),
         open_files: Mutex::new(HashMap::new())
     };
         
-    // restore_cache(&mut state);
+    restore_cache(&mut state);
 
     let state = Arc::new(state);
 
@@ -311,54 +304,29 @@ async fn main() -> Result<()> {
         .accept(VPFSProtocol::ALPN, protocol::VPFSProtocol{ state:state.clone() })
         .spawn();
 
-    if opt.root_id.is_some() {
-        // root_id is provided, connect to root node, send hello and populate known hosts
-        println!("Running as non root node");
-
-        let remote_id = opt.root_id.unwrap();
+    if opt.remote_id.is_some() {
+        // remote_id is provided, connect to remote node, send hello and populate known hosts
+        let remote_id = opt.remote_id.unwrap();
+        println!("Connecting to network with node {}", remote_id);
 
         let connection = connect_to_network(&router.endpoint(), remote_id, &state).await;
         if connection.is_none() {
             panic!("Could not connect")
         }
-        println!("connected to network");
+        println!("Connected to network");
         let new_node = setup_files_dir();
-        println!("{new_node}");
-        if new_node {
-            build_file_system(&connection.unwrap()).await;
-        }
-        println!("built file system");
+        // if new_node {
+        //     build_file_system(&connection.unwrap()).await;
+        // }
+        // println!("built file system");
 
         establish_connections(&state).await;
         
     } else {
         // current node is the initial node of network
-        // initialize known hosts map, create root directory if it does not exist, and add self links
-        // create logs file if it does not exist
         println!("Running as first node on vpfs");
 
         let new_node = setup_files_dir();
-
-        if let Err(create_error) = fs::File::create_new("root") {
-            if create_error.kind() != io::ErrorKind::AlreadyExists {
-                panic!("Could not create root directory");
-            }
-        } else {
-            let mut self_link = DirectoryEntry {
-                location: Location { node_name: None, uri: "root".to_string() },
-                name: ".".to_string(),
-                is_dir: true
-            };
-            let _ = append_dir_entry("root", &self_link, &state);
-            self_link.name = "..".to_string();
-            let _ = append_dir_entry("root", &self_link, &state);
-        }
-
-        if let Err(create_error) = fs::File::create_new("logs") {
-            if create_error.kind() != io::ErrorKind::AlreadyExists {
-                panic!("Could not create logs file");
-            }
-        }
 
     }
 

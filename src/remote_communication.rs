@@ -9,7 +9,6 @@ use anyhow::Result;
 
 use std::sync::{Arc, Mutex};
 
-use crate::file_system::build_file_system;
 use crate::protocol::VPFSProtocol;
 use crate::messages::{Hello, HelloResponse};
 
@@ -69,12 +68,11 @@ pub async fn connect_to_network(endpoint: &Endpoint, remote_endpoint_id: PublicK
                 Ok((mut send, mut recv)) => {
                     println!("Opened bi-directional stream to root node: {}", remote_endpoint_id);
                     
-                    // send known nodes and receive other node's known nodes and update hashmap
                     let local_known_nodes = {
                         let mut nodes = state.known_nodes.lock().unwrap().clone();
                         nodes.insert(state.local.name.clone(), state.local.endpoint_id);
                         nodes
-                    }; // MutexGuard dropped here, before any awaits
+                    };
 
                     let msg = Hello::InitHello(local_known_nodes);
                     send_message(&mut send, msg).await;
@@ -148,7 +146,7 @@ pub async fn establish_connections(state: &Arc<DaemonState>){
             .filter(|(_, id)| *id != &state.local.endpoint_id)
             .map(|(name, id)| (name.clone(), *id))
             .collect()
-    }; // lock dropped before any awaits
+    };
 
     for (node_name, node_id) in nodes_to_connect {
         let node = VPFSNode{name: node_name.clone(), endpoint_id: node_id};

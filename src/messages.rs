@@ -11,16 +11,23 @@ pub struct VPFSNode {
 }
 
 #[derive(Debug,Clone,Eq,Hash,PartialEq,Serialize,Deserialize)]
-pub struct Location {
-    pub node_name: Option<String>,
-    pub uri: String
+pub struct FileEntry {
+    pub owner: String,
+    pub uri: String,
+    pub name: String,
 }
 
-#[derive(Serialize,Deserialize,Clone,Eq,Hash,PartialEq,Debug)]
-pub struct DirectoryEntry {
-    pub location: Location,
-    pub name: String,
-    pub is_dir: bool
+#[derive(Serialize,Deserialize,Clone,Eq,PartialEq,Debug)]
+pub enum LogOp {
+    Create(FileEntry),
+    Modify(FileEntry),
+    Remove(FileEntry),
+}
+
+#[derive(Serialize,Deserialize,Clone,Debug)]
+pub struct LogEntry {
+    version_vec: HashMap<String, i32>,
+    op: LogOp,
 }
 
 #[derive(Serialize,Deserialize,Clone,Eq,Hash,PartialEq,Debug)]
@@ -48,14 +55,14 @@ pub enum HelloResponse {
 
 #[derive(Serialize,Deserialize,Debug,Eq,PartialEq)]
 pub enum VPFSError {
-    OnlyInCache(Location),
-    CacheNeededForTraversal(DirectoryEntry),
+    OnlyInCache(FileEntry),
+    // CacheNeededForTraversal(DirectoryEntry),
     NotModified,
     DoesNotExist,  // We can verify that the file does not exist
     NotFound,      // We can not find the file. File may or may not exist
     NotAccessible, // We can not access the node need to complete request
     NotADirectory,
-    AlreadyExists(DirectoryEntry),
+    AlreadyExists(FileEntry),
     FileNotOpen,
     Other(String),
 }
@@ -71,10 +78,8 @@ pub enum DaemonRequest {
     Close(i32),
     Write(String),
     Remove(String),
-    AppendDirectoryEntry(String, DirectoryEntry),
     /// to request for endpoint_id of node given node_name
     AddressFor(String),
-    DirStructure(),
 }
 
 /// Responses to a daemon from a daemon for requests
@@ -89,11 +94,8 @@ pub enum DaemonResponse {
     /// usize is number of bytes written
     Write(Result<usize, VPFSError>),
     Remove(Result<(), VPFSError>),
-    AppendDirectoryEntry(Result<(), VPFSError>),
     /// `endpoint_id` for node given name
     AddressFor(Option<PublicKey>),
-    DirStructureData(Vec<u8>),
-    DirStructureDone(Result<(), VPFSError>),
 }
 
 /// Requests from client to daemon
@@ -103,22 +105,20 @@ pub enum ClientRequest {
     /// parent dir uri, name
     Place(String, String),
     /// parent dir uri, name
-    Mkdir(String, String), 
-    Open(Location),
-    ReadFd(Location, i32, usize),
-    ReadLineFd(Location, i32),
+    Open(FileEntry),
+    ReadFd(FileEntry, i32, usize),
+    ReadLineFd(FileEntry, i32),
     Close(String, i32),
-    Read(Location),
-    /// `Location`, number of bytes to write
-    Write(Location, usize),
+    Read(FileEntry),
+    /// `FileEntry`, number of bytes to write
+    Write(FileEntry, usize),
 }
 
 /// Response to client requests
 #[derive(Serialize,Deserialize)]
 pub enum ClientResponse {
-    Find(Result<DirectoryEntry, VPFSError>),
-    Place(Result<Location, VPFSError>),
-    Mkdir(Result<Location, VPFSError>),
+    Find(Result<FileEntry, VPFSError>),
+    Place(Result<FileEntry, VPFSError>),
     Open(Result<i32,VPFSError>),
     ReadFd(Result<usize, VPFSError>),
     ReadLineFd(Result<usize, VPFSError>),

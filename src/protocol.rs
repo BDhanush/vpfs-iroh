@@ -75,7 +75,7 @@ impl VPFSProtocol {
                 Ok(DaemonRequest::Read( uri, last_modified )) => {
                     let should_send = {
                         if let Some(remote_last_modified) = last_modified {
-                            let _fs_lock = self.state.fs_access_lock.read().unwrap();
+                            let _fs_lock = self.state.file_system.read().unwrap();
                             if let Ok(file_data) = fs::metadata(&uri) {
                                 if let Ok(local_last_modified) = file_data.modified() {
                                     local_last_modified >= remote_last_modified
@@ -91,7 +91,7 @@ impl VPFSProtocol {
                         continue;
                     }
 
-                    match read_local(&uri, &self.state.fs_access_lock) {
+                    match read_local(&uri, &self.state.file_system) {
                         Ok(buf) => {
                             send_message(&mut send, DaemonResponse::Read(Ok(()))).await;
                             send_message(&mut send, buf).await;
@@ -103,18 +103,15 @@ impl VPFSProtocol {
                 }
                 Ok(DaemonRequest::Write(uri)) => {
                     let buf=receive_message::<Vec<u8>>(&mut recv).await.unwrap();
-                    if write_local(&uri, &buf, &self.state.fs_access_lock).is_ok() {
+                    if write_local(&uri, &buf, &self.state.file_system).is_ok() {
                         send_message(&mut send, DaemonResponse::Write(Ok(buf.len()))).await;
                     } else {
                         send_message(&mut send, DaemonResponse::Write(Err(VPFSError::DoesNotExist))).await;
                     }
                 }
-                Ok(DaemonRequest::AppendDirectoryEntry(directory,new_entry )) => {
-                    send_message(&mut send, DaemonResponse::AppendDirectoryEntry(append_dir_entry(&directory, &new_entry, &self.state))).await;
-                }
                 Ok(DaemonRequest::Remove(uri)) => {
                     let result = {
-                        let _fs_lock = self.state.fs_access_lock.write().unwrap();
+                        let _fs_lock = self.state.file_system.write().unwrap();
                         fs::remove_file(uri).is_ok()
                     };
 
@@ -131,21 +128,6 @@ impl VPFSProtocol {
                     };
 
                     send_message(&mut send, DaemonResponse::AddressFor(addr)).await;
-                }
-                Ok(DaemonRequest::DirStructure()) => {
-                    if let Ok(entries) = fs::read_dir(".") {
-                        for entry in entries.flatten() {
-                            if let Ok(mut file) = fs::File::open(entry.path()) {
-                                if serde_bare::from_reader::<_, DirectoryEntry>(&mut file).is_ok() {
-                                    file.seek(SeekFrom::Start(0)).ok();
-                                    let mut data = Vec::new();
-                                    file.read_to_end(&mut data).ok();
-                                    send_message(&mut send, DaemonResponse::DirStructureData(data)).await;
-                                }
-                            }
-                        }
-                    }
-                    send_message(&mut send, DaemonResponse::DirStructureDone(Ok(()))).await;
                 }
                 Ok(_) => eprintln!("Unexpected message from {remote_id}"),
                 Err(e) => eprintln!("Error receiving message from {remote_id}: {:?}", e),
