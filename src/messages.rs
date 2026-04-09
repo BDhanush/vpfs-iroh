@@ -71,6 +71,7 @@ pub enum VPFSError {
 #[derive(Serialize,Deserialize)]
 pub enum DaemonRequest {
     Place,
+    AddEntry(String, FileEntry),
     Open(String),
     Read(String, Option<SystemTime>),
     ReadFd(i32, usize),

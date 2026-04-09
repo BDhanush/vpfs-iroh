@@ -121,6 +121,9 @@ impl VPFSProtocol {
                         send_message(&mut send, DaemonResponse::Remove(Err(VPFSError::DoesNotExist))).await;
                     }
                 }
+                Ok(DaemonRequest::AddEntry(path, file_entry)) => {
+                    place_file_in_memory(&self.state.file_system, &path, file_entry);
+                }
                 Ok(DaemonRequest::AddressFor(node_name)) => {
                     let addr = {
                         let known_nodes = self.state.known_nodes.lock().unwrap();

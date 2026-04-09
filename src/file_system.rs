@@ -231,6 +231,10 @@ pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<V
     }
 }
 
+pub fn place_file_in_memory(file_system: &RwLock<HashMap<String, RwLock<FileEntry>>>, path: &str, new_file: FileEntry) {
+    file_system.write().unwrap().insert(path.to_string(), RwLock::new(new_file));
+}
+
 pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError>{
     let uri = if *at == state.local.name {
         create_file_with_random_uri()
@@ -246,7 +250,21 @@ pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<Daemo
         uri: uri,
         name: path.to_string(),
     };
-    state.file_system.write().unwrap().insert(path.to_string(), RwLock::new(new_file.clone()));
+    place_file_in_memory(&state.file_system, path, new_file.clone());
+
+    let connections: Vec<Arc<Connection>> = {
+        let conns = state.connections.lock().unwrap();
+        conns.values()
+            .filter(|c| c.close_reason().is_none())
+            .cloned()
+            .collect()
+    };
+    for conn in connections {
+        if let Ok((mut send, _)) = conn.open_bi().await {
+            let _ = send_message(&mut send, DaemonRequest::AddEntry(path.to_string(), new_file.clone())).await;
+        }
+    }
+
     Ok(new_file)
 }
 
