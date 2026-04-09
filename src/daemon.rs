@@ -1,5 +1,5 @@
 use clap::Parser;
-use iroh::{Endpoint, PublicKey, protocol::Router};
+use iroh::{Endpoint, PublicKey, protocol::Router, endpoint::TransportConfig};
 use serde::de::DeserializeOwned;
 use serde::{Serialize};
 use lru::LruCache;
@@ -268,10 +268,10 @@ async fn main() -> Result<()> {
     
     // initialize iroh endpoint and wait for it to be online
     let address = format!("0.0.0.0:{}", opt.port);
-    // let mut config = TransportConfig::default();
-    // config.max_idle_timeout(None);
+    let mut config = TransportConfig::default();
+    config.max_idle_timeout(None);
     let endpoint: Endpoint = Endpoint::builder()
-        // .transport_config(config)
+        .transport_config(config)
         .bind_addr_v4(address.parse().unwrap())
         .bind()
         .await?;
