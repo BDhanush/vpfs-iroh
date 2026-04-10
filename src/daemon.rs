@@ -88,6 +88,11 @@ fn receive_buf_tcp(stream: &mut TcpStream, len: usize) -> Result<Vec<u8>, Error>
     Ok(buf)
 }
 
+/// Handle client ListFiles request
+async fn handle_client_list_files(stream: &mut TcpStream, dir: &str, state: &Arc<DaemonState>) {
+    send_message_tcp(stream, ClientResponse::ListFiles(list_files(dir, state)));
+}
+
 /// Handle client Find request
 async fn handle_client_find(stream: &mut TcpStream, file: &str, state: &Arc<DaemonState>) {
     println!("handle client find for file: {}", file);
@@ -201,6 +206,9 @@ fn handle_client(mut stream: TcpStream, state: Arc<DaemonState>, rt_handle: &Han
         loop {
 
             match receive_message_tcp(&mut stream) {
+                Ok(ClientRequest::ListFiles(dir)) => {
+                    handle_client_list_files(&mut stream, &dir, &state).await;
+                }
                 Ok(ClientRequest::Find(file)) => {
                     handle_client_find(&mut stream, &file, &state).await;
                 }

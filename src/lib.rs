@@ -131,6 +131,15 @@ impl VPFS {
         }
     }
 
+    pub fn ls(&self, path: &str) -> Result<Vec<FileEntry>, VPFSError> {
+        if let ClientResponse::ListFiles(fs_result) = self.send_request(ClientRequest::ListFiles(path.to_string())) {
+            fs_result
+        }
+        else {
+            panic!("Bad response to ls")
+        }
+    }
+
     pub fn read(&self, what: FileEntry) -> Result<Vec<u8>, VPFSError> {
         let mut stream = self.connection.lock().unwrap();
         self.send_request_async(&mut stream, ClientRequest::Read(what));

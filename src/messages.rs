@@ -105,6 +105,7 @@ pub enum DaemonResponse {
 /// Requests from client to daemon
 #[derive(Serialize,Deserialize)]
 pub enum ClientRequest {
+    ListFiles(String),
     Find(String),
     /// parent dir uri, name
     Place(String, String),
@@ -121,6 +122,7 @@ pub enum ClientRequest {
 /// Response to client requests
 #[derive(Serialize,Deserialize)]
 pub enum ClientResponse {
+    ListFiles(Result<Vec<FileEntry>, VPFSError>),
     Find(Result<FileEntry, VPFSError>),
     Place(Result<FileEntry, VPFSError>),
     Open(Result<i32,VPFSError>),

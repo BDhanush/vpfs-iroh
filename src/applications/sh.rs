@@ -322,26 +322,17 @@ fn parse_command(command_string: &str, cwd: &str) -> Option<PipeableCommand> {
     }
 }
 
-//TODO
-// fn run_ls(command: Command, vpfs: Arc<VPFS>, cwd: &str) {
-//     let fetch_result = if cwd == "" {
-//         vpfs.fetch(".")
-//     }
-//     else {
-//         vpfs.fetch(cwd)
-//     };
-//     if let Ok(directory_data) = fetch_result {
-//         let mut directory_reader = BufReader::new(&*directory_data);
-//         let mut read_result: Result<DirectoryEntry, serde_bare::error::Error> = serde_bare::from_reader(&mut directory_reader);
-//         while let Ok(entry) = read_result {
-//             println!("{} {} {}", if entry.is_dir {"d"} else {"-"}, entry.name, entry.location.node_name.as_deref().unwrap_or("-"));
-//             read_result = serde_bare::from_reader(&mut directory_reader);
-//         }
-//     }
-//     else {
-//         println!("Failed to read directory data for {}", cwd);
-//     }
-// }
+fn run_ls(command: Command, vpfs: Arc<VPFS>, cwd: &str) {
+    let ls_result = vpfs.ls(cwd);
+    if let Ok(file_entries) = ls_result {
+        for entry in file_entries {
+            println!("{} {}", entry.name, entry.owner);
+        }
+    }
+    else {
+        println!("Failed to list files for {}", cwd);
+    }
+}
 
 fn run_cat(vpfs: Arc<VPFS>, command: &Command, cwd: &str) {
     for file_name in &command.args {
@@ -363,7 +354,7 @@ fn run_nonpiped_command(command: Command, vpfs: Arc<VPFS>, cwd: &mut String) {
         // "cd" => run_cd(command, vpfs, cwd),
         "pwd" => println!("/{}", cwd),        
         // "mkdir" => run_mkdir(command, vpfs, cwd),
-        // "ls" => run_ls(command, vpfs, cwd),
+        "ls" => run_ls(command, vpfs, cwd),
         // "cat" => run_cat(vpfs.clone(), &command, cwd),
         // Normal binaries
         _ => {

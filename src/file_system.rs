@@ -267,6 +267,16 @@ pub async fn place_file(path: &str, at: &String, state: &Arc<DaemonState>) -> Re
 }
 
 
+pub fn list_files(dir: &str, state: &Arc<DaemonState>) -> Result<Vec<FileEntry>, VPFSError> {
+    // TODO
+    // for now lists all files (as directories are not supported)
+    let outer = state.file_system.read().unwrap();
+    let entries = outer.iter()
+        .map(|(_, entry)| entry.clone())
+        .collect();
+    Ok(entries)
+}
+
 pub fn find(file: &str, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError> {
     let outer = state.file_system.read().unwrap();
     println!("Finding file: {}, file system: {:?}", file, *outer);
