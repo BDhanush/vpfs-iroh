@@ -66,10 +66,10 @@ pub fn add_cache_entry(file: &FileEntry, data: &[u8], cache: &mut MutexGuard<Lru
 
 
 /// Restore cache from ./cache file if it exists
-pub fn restore_cache(state: &mut DaemonState) {
+pub fn restore_cache(state: &Arc<DaemonState>) {
     if let Ok(cache_file) = fs::File::open("cache") {
         let mut cache = state.cache.lock().unwrap();
-        state.used_cache_bytes = serde_bare::from_reader(&cache_file).expect("Failed to readed from cache file");
+        *state.used_cache_bytes.write().unwrap() = serde_bare::from_reader(&cache_file).expect("Failed to readed from cache file");
         while let Ok(key) = serde_bare::from_reader::<_, FileEntry>(&cache_file) {
             let value = serde_bare::from_reader(&cache_file).unwrap();
             cache.put(key.clone(), value);
@@ -79,7 +79,7 @@ pub fn restore_cache(state: &mut DaemonState) {
 }
 
 /// Restore file system from ./file_system file if it exists
-pub fn restore_file_system(state: &mut DaemonState) {
+pub fn restore_file_system(state: &Arc<DaemonState>) {
     if let Ok(fs_file) = fs::File::open("file_system") {
         let mut file_system = state.file_system.write().unwrap();
         while let Ok(path) = serde_bare::from_reader::<_, String>(&fs_file) {

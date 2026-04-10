@@ -304,9 +304,6 @@ async fn main() -> Result<()> {
         log: Vec::new(),
         open_files: Mutex::new(HashMap::new())
     };
-        
-    restore_file_system(&mut state);
-    restore_cache(&mut state);
 
     let state = Arc::new(state);
 
@@ -328,6 +325,8 @@ async fn main() -> Result<()> {
         let new_node = setup_files_dir();
         if new_node {
             build_file_system(connection.unwrap(), &state).await;
+        } else {
+            restore_file_system(&state);
         }
         // println!("built file system");
 
@@ -346,8 +345,12 @@ async fn main() -> Result<()> {
         println!("Running as first node on vpfs");
 
         let new_node = setup_files_dir();
-
+        if !new_node {
+            restore_file_system(&state);
+        }
     }
+
+    restore_cache(&state);
 
     let client_address = format!("0.0.0.0:{}",opt.listen_port);
     let rt_handle = Handle::current();
