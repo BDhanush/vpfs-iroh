@@ -106,7 +106,7 @@ pub async fn connect_to_network(endpoint: &Endpoint, remote_endpoint_id: PublicK
 
 
 /// Connect to a single node
-async fn establish_connection(endpoint: &Endpoint, node: &VPFSNode) -> Option<Connection> {
+async fn establish_connection(endpoint: &Endpoint, node: &VPFSNode, cur_node: &VPFSNode) -> Option<Connection> {
     let remote_id = node.endpoint_id;
     println!("Connecting to root node: {}", remote_id);
     // connect to the other endpoint
@@ -118,7 +118,7 @@ async fn establish_connection(endpoint: &Endpoint, node: &VPFSNode) -> Option<Co
                 Ok((mut send, mut recv)) => {
                     println!("Opened bi-directional stream to root node: {}", remote_id);
 
-                    send_message(&mut send, Hello::DaemonHello(node.clone())).await;
+                    send_message(&mut send, Hello::DaemonHello(cur_node.clone())).await;
                     println!("Sent hello to root node, waiting for response...");
                     receive_message::<HelloResponse>(&mut recv).await.expect("Got bad hello response");
 
@@ -150,7 +150,7 @@ pub async fn establish_connections(state: &Arc<DaemonState>){
 
     for (node_name, node_id) in nodes_to_connect {
         let node = VPFSNode{name: node_name.clone(), endpoint_id: node_id};
-        if let Some(conn) = establish_connection(&state.endpoint, &node).await{
+        if let Some(conn) = establish_connection(&state.endpoint, &node, &state.local).await{
             let conn = Arc::new(conn);
             state.connections.lock().unwrap().insert(node_name.clone(), conn.clone());
             // Spawn a daemon loop so the remote node can open streams back to us
@@ -177,6 +177,7 @@ pub async fn get_connection(node_name: &String, state: &Arc<DaemonState>) -> Opt
             return Some(connection.clone());
         }
     }
+    println!("None");
     return None;
     
 

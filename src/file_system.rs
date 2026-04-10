@@ -128,7 +128,7 @@ pub fn create_file_with_random_uri() -> String {
     uri
 }
 
-pub async fn build_file_system(connection: &Connection, state: &Arc<DaemonState>) {
+pub async fn build_file_system(connection: Connection, state: &Arc<DaemonState>) {
     println!("Building file system from connection: {}", connection.remote_id());
     match connection.open_bi().await {
         Ok((mut send, mut recv)) => {

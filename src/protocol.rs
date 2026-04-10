@@ -178,6 +178,9 @@ impl VPFSProtocol {
                         connections.insert(node.name.clone(), conn.clone());
                     }
                     for (name, connection) in self.state.connections.lock().unwrap().iter() {
+                        println!("known node: {}, {:?}", name, connection.close_reason());
+                    }
+                    for (name, connection) in self.state.connections.lock().unwrap().iter() {
                         println!("connection: {}, {:?}", name, connection.close_reason());
                     }
                     send_message(&mut send, HelloResponse::DaemonHello).await;
@@ -193,6 +196,10 @@ impl VPFSProtocol {
                         known_nodes_snapshot.insert(self.state.local.name.clone(), self.state.local.endpoint_id.clone());
                         known_nodes_snapshot
                     };
+
+                    for (name, id) in known_nodes_snapshot.iter() {
+                        println!("Sending known node: {}, endpoint_id: {}", name, id);
+                    }
 
                     send_message(&mut send, HelloResponse::InitHello(known_nodes_snapshot)).await;
                     self.handle_daemon(conn).await;
