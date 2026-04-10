@@ -21,7 +21,7 @@ impl VPFSProtocol {
     pub const ALPN: &'static [u8] = b"uic/vpfs";
 
     /// Handle daemon requests
-    async fn handle_daemon(&self, conn: Arc<Connection>) {
+    pub async fn handle_daemon(&self, conn: Arc<Connection>) {
         let remote_id = conn.remote_id();
 
         while let Ok((mut send, mut recv)) = conn.accept_bi().await {
@@ -93,6 +93,7 @@ impl VPFSProtocol {
 
                     if !should_send {
                         send_message(&mut send, DaemonResponse::Read(Err(VPFSError::NotModified))).await;
+                        let _ = send.finish();
                         continue;
                     }
 
@@ -154,7 +155,7 @@ impl VPFSProtocol {
                 Ok(_) => eprintln!("Unexpected message from {remote_id}"),
                 Err(e) => eprintln!("Error receiving message from {remote_id}: {:?}", e),
             }
-                
+            let _ = send.finish();
         }
     }
 

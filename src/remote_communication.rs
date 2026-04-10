@@ -151,7 +151,11 @@ pub async fn establish_connections(state: &Arc<DaemonState>){
     for (node_name, node_id) in nodes_to_connect {
         let node = VPFSNode{name: node_name.clone(), endpoint_id: node_id};
         if let Some(conn) = establish_connection(&state.endpoint, &node).await{
-            state.connections.lock().unwrap().insert(node_name.clone(), Arc::new(conn));
+            let conn = Arc::new(conn);
+            state.connections.lock().unwrap().insert(node_name.clone(), conn.clone());
+            // Spawn a daemon loop so the remote node can open streams back to us
+            let protocol = VPFSProtocol { state: state.clone() };
+            tokio::spawn(async move { protocol.handle_daemon(conn).await; });
         } else {
             eprintln!("Failed to establish connection to node: {}", node_name);
         }
@@ -161,31 +165,31 @@ pub async fn establish_connections(state: &Arc<DaemonState>){
 /// Get a connection to a node, if it doesn't exist, try to establish it
 pub async fn get_connection(node_name: &String, state: &Arc<DaemonState>) -> Option<Arc<Connection>> {
     println!("Getting connection to node: {}", node_name);
-    {
-        // check hashmap for existing connection
-        // if exists and already closed remove from hashmap
-        let mut connections = state.connections.lock().unwrap();
-        if let Some(connection) = connections.get(node_name) {
-            println!("Found existing connection to node: {}, close reason: {:?}", node_name, connection.close_reason());
-            if connection.close_reason().is_some() {
-                connections.remove(node_name);
-                return None;
-            } else {
-                return Some(connection.clone());
-            }
+    
+    // check hashmap for existing connection
+    // if exists and already closed remove from hashmap
+    let mut connections = state.connections.lock().unwrap();
+    if let Some(connection) = connections.get(node_name) {
+        println!("Found existing connection to node: {}, close reason: {:?}", node_name, connection.close_reason());
+        if connection.close_reason().is_some() {
+            connections.remove(node_name);
+        } else {
+            return Some(connection.clone());
         }
     }
+    return None;
+    
 
     // use endpoint id from known nodes hashmap to connect
-    let known_nodes = state.known_nodes.lock().unwrap();
-    if let Some(remote_id) = known_nodes.get(node_name) {
-        if let Some(conn) = establish_connection(&state.endpoint, &VPFSNode{name: node_name.clone(), endpoint_id:remote_id.clone()}).await {
-            let conn = Arc::new(conn);
-            let mut connections = state.connections.lock().unwrap();
-            connections.insert(node_name.clone(), conn.clone());
-            return Some(conn);
-        }
-    }
+    // let known_nodes = state.known_nodes.lock().unwrap();
+    // if let Some(remote_id) = known_nodes.get(node_name) {
+    //     if let Some(conn) = establish_connection(&state.endpoint, &VPFSNode{name: node_name.clone(), endpoint_id:remote_id.clone()}).await {
+    //         let conn = Arc::new(conn);
+    //         let mut connections = state.connections.lock().unwrap();
+    //         connections.insert(node_name.clone(), conn.clone());
+    //         return Some(conn);
+    //     }
+    // }
 
     // TODO: ask network for node's endpoint_id if not in known_nodes
     // if let Some(root_node) = state.root.read().unwrap().as_ref() {
