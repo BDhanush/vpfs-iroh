@@ -227,7 +227,11 @@ pub fn place_file_in_memory(file_system: &RwLock<HashMap<String, FileEntry>>, pa
     }
 }
 
-pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError>{
+pub async fn place_file(path: &str, at: &String, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError>{
+    let find_result = find(path, state);
+    if find_result.is_ok() {
+        return Err(VPFSError::AlreadyExists(find_result.unwrap()));
+    }
     let uri = if *at == state.local.name {
         create_file_with_random_uri()
     }

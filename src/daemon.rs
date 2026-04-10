@@ -99,7 +99,7 @@ async fn handle_client_find(stream: &mut TcpStream, file: &str, state: &Arc<Daem
 async fn handle_client_place(stream: &mut TcpStream, file: &str, node_name: String, state: &Arc<DaemonState>) {
     println!("handle client place for file: {}", file);
 
-    send_message_tcp(stream, ClientResponse::Place(place_file(file, &node_name, false, state).await));
+    send_message_tcp(stream, ClientResponse::Place(place_file(file, &node_name, state).await));
 }
 
 async fn handle_client_open_file(stream: &mut TcpStream, file: FileEntry, state: &Arc<DaemonState>) {
