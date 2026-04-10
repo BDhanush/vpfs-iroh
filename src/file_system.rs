@@ -250,9 +250,11 @@ pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<Daemo
             .cloned()
             .collect()
     };
+    println!("Notifying {} other nodes of new file", connections.len());
     for conn in connections {
-        if let Ok((mut send, _)) = conn.open_bi().await {
+        if let Ok((mut send, mut recv)) = conn.open_bi().await {
             let _ = send_message(&mut send, DaemonRequest::AddEntry(path.to_string(), new_file.clone())).await;
+            let _ = receive_message::<DaemonResponse>(&mut recv).await;
         }
     }
 
@@ -262,6 +264,7 @@ pub async fn place_file(path: &str, at: &String, is_dir: bool, state: &Arc<Daemo
 
 pub fn find(file: &str, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError> {
     let outer = state.file_system.read().unwrap();
+    println!("Finding file: {}, file system: {:?}", file, *outer);
     outer.get(file)
         .map(|e| e.clone())
         .ok_or(VPFSError::DoesNotExist)

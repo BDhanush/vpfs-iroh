@@ -132,6 +132,7 @@ impl VPFSProtocol {
                     println!("Received AddEntry request for node: {}", remote_id);
 
                     place_file_in_memory(&self.state.file_system, &path, file_entry);
+                    send_message(&mut send, DaemonResponse::AddEntry(Ok(()))).await;
                 }
                 Ok(DaemonRequest::AddressFor(node_name)) => {
                     let addr = {
@@ -175,12 +176,15 @@ impl VPFSProtocol {
                         let mut connections = self.state.connections.lock().unwrap();
                         connections.insert(node.name.clone(), conn.clone());
                     }
+                    for (name, connection) in self.state.connections.lock().unwrap().iter() {
+                        println!("connection: {}, {:?}", name, connection.close_reason());
+                    }
                     send_message(&mut send, HelloResponse::DaemonHello).await;
                     self.handle_daemon(conn).await;
                 }
                 Ok(Hello::InitHello(new_nodes)) => {
                     println!("Received InitHello from node: {}, new nodes: {:?}", remote_id, new_nodes);
-                    
+
                     let known_nodes_snapshot = {
                         let mut known_nodes = self.state.known_nodes.lock().unwrap();
                         let mut known_nodes_snapshot = known_nodes.clone();

@@ -89,6 +89,7 @@ pub enum DaemonRequest {
 pub enum DaemonResponse {
     Place(String),
     FileSystem(HashMap<String, FileEntry>),
+    AddEntry(Result<(), VPFSError>),
     Open(Result<i32, VPFSError>),
     Read(Result<(), VPFSError>),
     ReadFd(Result<(), VPFSError>),
