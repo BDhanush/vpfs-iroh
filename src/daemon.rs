@@ -90,21 +90,29 @@ fn receive_buf_tcp(stream: &mut TcpStream, len: usize) -> Result<Vec<u8>, Error>
 
 /// Handle client Find request
 async fn handle_client_find(stream: &mut TcpStream, file: &str, state: &Arc<DaemonState>) {
+    println!("handle client find for file: {}", file);
+
     send_message_tcp(stream, ClientResponse::Find(find(file, state)));
 }
 
 /// Handle client Place request
 async fn handle_client_place(stream: &mut TcpStream, file: &str, node_name: String, state: &Arc<DaemonState>) {
+    println!("handle client place for file: {}", file);
+
     send_message_tcp(stream, ClientResponse::Place(place_file(file, &node_name, false, state).await));
 }
 
 async fn handle_client_open_file(stream: &mut TcpStream, file: FileEntry, state: &Arc<DaemonState>) {
+    println!("handle client open for file: {:?}", file);
+
     send_message_tcp(stream, ClientResponse::Open(open_file(file, state).await));    
 }
 
 /// Handle client Read request
 /// <br>
 async fn handle_client_read(stream: &mut TcpStream, file: FileEntry, state: &Arc<DaemonState>) {
+    println!("handle client read for file: {:?}", file);
+
     // if file is local, read locally, else read remotely and send response back through stream
     if file.owner == state.local.name {
         println!("local read {}", file.uri);
@@ -157,6 +165,8 @@ async fn handle_client_close_file(stream: &mut TcpStream, node_name: String, fd:
 
 /// Handle client Write request
 async fn handle_client_write(stream: &mut TcpStream, file: FileEntry, file_len: usize, state: &Arc<DaemonState>) {
+    println!("handle client write for file: {:?}", file);
+
     if file.owner == state.local.name {
         let buf = receive_buf_tcp(stream, file_len).unwrap();
         if write_local(&file.uri, &buf, &state.file_system).is_ok() {
@@ -322,7 +332,15 @@ async fn main() -> Result<()> {
         // println!("built file system");
 
         establish_connections(&state).await;
-        
+
+        for (name, remote_id) in state.known_nodes.lock().unwrap().iter() {
+            println!("Known node: {}, {}", name, remote_id);
+        }
+
+        for (name, connection) in state.connections.lock().unwrap().iter() {
+            println!("connection: {}, {:?}", name, connection.close_reason());
+        }
+
     } else {
         // current node is the initial node of network
         println!("Running as first node on vpfs");

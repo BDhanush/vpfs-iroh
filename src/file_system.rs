@@ -216,6 +216,7 @@ pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<V
 }
 
 pub fn place_file_in_memory(file_system: &RwLock<HashMap<String, FileEntry>>, path: &str, new_file: FileEntry) {
+    println!("Placing file in memory at path: {}, with uri: {}, owner: {}", path, new_file.uri, new_file.owner);
     let mut fs = file_system.write().unwrap();
     fs.insert(path.to_string(), new_file);
     let fs_file = fs::File::create("file_system").expect("Failed to create file_system file");

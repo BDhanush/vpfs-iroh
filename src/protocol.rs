@@ -27,10 +27,13 @@ impl VPFSProtocol {
         while let Ok((mut send, mut recv)) = conn.accept_bi().await {
             match receive_message(&mut recv).await {
                 Ok(DaemonRequest::Place)  => {
+                    println!("Received Place request for node: {}", remote_id);
                     let response = DaemonResponse::Place(create_file_with_random_uri());
                     send_message(&mut send, response).await;
                 }
                 Ok(DaemonRequest::Open(uri)) => {
+                    println!("Received Open request for node: {}", remote_id);
+
                     match open_file_local(&uri, &self.state.open_files) {
                         Ok(daemon_fd) => {
                             send_message(&mut send, DaemonResponse::Open(Ok(daemon_fd))).await;
@@ -73,6 +76,8 @@ impl VPFSProtocol {
                     }
                 }
                 Ok(DaemonRequest::Read( uri, last_modified )) => {
+                    println!("Received Read request for node: {}", remote_id);
+
                     let should_send = {
                         if let Some(remote_last_modified) = last_modified {
                             let _fs_lock = self.state.file_system.read().unwrap();
@@ -102,6 +107,8 @@ impl VPFSProtocol {
                     }
                 }
                 Ok(DaemonRequest::Write(uri)) => {
+                    println!("Received Write request for node: {}", remote_id);
+
                     let buf=receive_message::<Vec<u8>>(&mut recv).await.unwrap();
                     if write_local(&uri, &buf, &self.state.file_system).is_ok() {
                         send_message(&mut send, DaemonResponse::Write(Ok(buf.len()))).await;
@@ -122,6 +129,8 @@ impl VPFSProtocol {
                     }
                 }
                 Ok(DaemonRequest::AddEntry(path, file_entry)) => {
+                    println!("Received AddEntry request for node: {}", remote_id);
+
                     place_file_in_memory(&self.state.file_system, &path, file_entry);
                 }
                 Ok(DaemonRequest::AddressFor(node_name)) => {
@@ -133,6 +142,8 @@ impl VPFSProtocol {
                     send_message(&mut send, DaemonResponse::AddressFor(addr)).await;
                 }
                 Ok(DaemonRequest::FileSystem) => {
+                    println!("Received FileSystem request for node: {}", remote_id);
+
                     let data = {
                         let file_system = self.state.file_system.read().unwrap();
                         file_system.clone()
@@ -157,6 +168,7 @@ impl VPFSProtocol {
 
             match receive_message(&mut recv).await {
                 Ok(Hello::DaemonHello(node)) => {
+                    println!("Received DaemonHello from node: {}, endpoint_id: {}", node.name, node.endpoint_id);
                     {    
                         let mut known_nodes = self.state.known_nodes.lock().unwrap();
                         known_nodes.insert(node.name.clone(), node.endpoint_id.clone());
@@ -167,6 +179,8 @@ impl VPFSProtocol {
                     self.handle_daemon(conn).await;
                 }
                 Ok(Hello::InitHello(new_nodes)) => {
+                    println!("Received InitHello from node: {}, new nodes: {:?}", remote_id, new_nodes);
+                    
                     let known_nodes_snapshot = {
                         let mut known_nodes = self.state.known_nodes.lock().unwrap();
                         let mut known_nodes_snapshot = known_nodes.clone();

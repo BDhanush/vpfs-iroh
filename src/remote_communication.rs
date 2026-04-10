@@ -119,9 +119,9 @@ async fn establish_connection(endpoint: &Endpoint, node: &VPFSNode) -> Option<Co
                     println!("Opened bi-directional stream to root node: {}", remote_id);
 
                     send_message(&mut send, Hello::DaemonHello(node.clone())).await;
+                    println!("Sent hello to root node, waiting for response...");
                     receive_message::<HelloResponse>(&mut recv).await.expect("Got bad hello response");
 
-                    println!("Sent hello to root node, waiting for response...");
                     
                     return Some(conn);
                 }
@@ -160,11 +160,13 @@ pub async fn establish_connections(state: &Arc<DaemonState>){
 
 /// Get a connection to a node, if it doesn't exist, try to establish it
 pub async fn get_connection(node_name: &String, state: &Arc<DaemonState>) -> Option<Arc<Connection>> {
+    println!("Getting connection to node: {}", node_name);
     {
         // check hashmap for existing connection
         // if exists and already closed remove from hashmap
         let mut connections = state.connections.lock().unwrap();
         if let Some(connection) = connections.get(node_name) {
+            println!("Found existing connection to node: {}, close reason: {:?}", node_name, connection.close_reason());
             if connection.close_reason().is_some() {
                 connections.remove(node_name);
                 return None;
