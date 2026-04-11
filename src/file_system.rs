@@ -90,12 +90,7 @@ pub fn restore_file_system(state: &Arc<DaemonState>) {
 }
 
 pub fn read_local(uri: &str, file_system: &RwLock<HashMap<String, FileEntry>>) -> io::Result<Vec<u8>> {
-    let outer = file_system.read().unwrap();
-    if outer.values().any(|e| e.uri == uri) {
-        fs::read(uri)
-    } else {
-        Err(io::Error::from(io::ErrorKind::NotFound))
-    }
+    fs::read(uri).map_err(|_| io::Error::from(io::ErrorKind::NotFound))
 }
 
 pub fn write_local(uri: &str, data: &Vec<u8>, file_system: &RwLock<HashMap<String, FileEntry>>) -> io::Result<()> {
