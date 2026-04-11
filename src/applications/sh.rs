@@ -42,9 +42,9 @@ impl Command {
                 };
             }
             Err(VPFSError::OnlyInCache(cache_file_entry)) => {
-                let mut buf = String::new();
                 loop {
-                    println!("File only available in cache. Use cached versoin? (y or n)");
+                    let mut buf = String::new();
+                    println!("File only available in cache. Use cached version? (y or n)");
                     io::stdin().read_line(&mut buf).unwrap();
                     match buf.trim() {
                         "y" => {
@@ -66,7 +66,27 @@ impl Command {
         let mut data = vec![];
         match pipe.read_to_end(&mut data) {
             Ok(_) => {
-                vpfs.store(&file_name, &data);
+                match vpfs.store(&file_name, &data) {
+                    Ok(()) => {}
+                    Err(VPFSError::OnlyInCache(cache_file_entry)) => {
+                        loop {
+                            let mut buf = String::new();
+                            println!("File only available in cache. Write to cached version? (y or n)");
+                            io::stdin().read_line(&mut buf).unwrap();
+                            match buf.trim() {
+                                "y" => {
+                                    vpfs.write(cache_file_entry, &data).ok();
+                                    break;
+                                }
+                                "n" => break,
+                                _ => continue,
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        println!("No longer able to write to file");
+                    }
+                }
             }
             Err(error) => {
                 println!("Got {} error trying to read from pipe", error);
@@ -74,7 +94,7 @@ impl Command {
         }
     }
 
-    pub fn spawn(self, vpfs: Arc<VPFS>) -> io::Result<process::Child> {
+    pub fn spawn(self, vpfs: Arc<VPFS>) -> io::Result<(process::Child, Vec<thread::JoinHandle<()>>)> {
         let mut process_command = process::Command::new(&self.program);
 
         let mut stdin_file_entry: Option<FileEntry> = None;
@@ -131,38 +151,39 @@ impl Command {
         let fork_ret = process_command.args(&self.args).spawn();
 
         if let Ok(mut child) = fork_ret {
+            let mut handles = vec![];
 
             // Spawn thread for forwarding stdin to VPFS as needed
             if let Some(stdin_file_entry) = stdin_file_entry {
                 let vpfs_clone = vpfs.clone();
-                thread::spawn (move || {
-                    Command::forward_reads(stdin_file_entry,child.stdin.take().unwrap(), vpfs_clone);
-                });
+                handles.push(thread::spawn(move || {
+                    Command::forward_reads(stdin_file_entry, child.stdin.take().unwrap(), vpfs_clone);
+                }));
                 child.stdin = None;
             }
 
             // Spawn thread for forwarding stdout to VPFS as needed
             if let Some(stdout_file) = stdout_file {
                 let vpfs_clone = vpfs.clone();
-                thread::spawn (move || {
+                handles.push(thread::spawn(move || {
                     Command::forward_writes(stdout_file, child.stdout.take().unwrap(), vpfs_clone);
-                });
+                }));
                 child.stdout = None;
             }
 
             // Spawn thread for forwarding stderr to VPFS as needed
             if let Some(stderr_file) = stderr_file {
                 let vpfs_clone = vpfs.clone();
-                thread::spawn(move || {
+                handles.push(thread::spawn(move || {
                     Command::forward_writes(stderr_file, child.stderr.take().unwrap(), vpfs_clone);
-                });
+                }));
                 child.stderr = None
             }
-            
-            Ok(child)
+
+            Ok((child, handles))
         }
         else {
-            fork_ret
+            Err(fork_ret.unwrap_err())
         }
     }
 }
@@ -359,8 +380,9 @@ fn run_nonpiped_command(command: Command, vpfs: Arc<VPFS>, cwd: &mut String) {
         // Normal binaries
         _ => {
             let fork_ret = command.spawn(vpfs);
-            if let Ok(mut child) = fork_ret {
+            if let Ok((mut child, handles)) = fork_ret {
                 child.wait().expect("Failed to wait for child");
+                for handle in handles { handle.join().ok(); }
             }
             else {
                 println!("Failed to run {:?}", program);
@@ -374,7 +396,7 @@ fn run_piped_command(mut lhs_command: Command, rhs_command: PipeableCommand, vpf
     let lhs_program = lhs_command.program.clone();
     lhs_command.stdout = RedirectType::Piped(Stdio::piped());
     let fork_ret = lhs_command.spawn(vpfs.clone());
-    if let Ok(mut child) = fork_ret{
+    if let Ok((mut child, handles)) = fork_ret {
         match rhs_command {
             PipeableCommand::NonPiped(mut rhs_command) => {
                 rhs_command.stdin = RedirectType::Piped(Stdio::from(child.stdout.take().unwrap()));
@@ -386,10 +408,11 @@ fn run_piped_command(mut lhs_command: Command, rhs_command: PipeableCommand, vpf
             }
         }
         child.wait().expect("Faild to wait for child");
+        for handle in handles { handle.join().ok(); }
     }
     else {
         println!("Failed to run {:?}", lhs_program);
-        run_command(rhs_command,vpfs, cwd);
+        run_command(rhs_command, vpfs, cwd);
     }
 
 }

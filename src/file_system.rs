@@ -32,8 +32,8 @@ pub fn setup_files_dir() -> bool {
     true
 }
 
-pub fn add_cache_entry(file: &FileEntry, data: &[u8], cache: &mut MutexGuard<LruCache<FileEntry, CacheEntry>>, state: &Arc<DaemonState>) {
-    if let Some(cache_entry) = cache.get(&file) {
+pub fn add_cache_entry(file: &FileEntry, data: &[u8], cache: &mut MutexGuard<LruCache<String, CacheEntry>>, state: &Arc<DaemonState>) {
+    if let Some(cache_entry) = cache.get(&file.name) {
         fs::write(&cache_entry.uri, &data);
     }
     else {
@@ -41,7 +41,7 @@ pub fn add_cache_entry(file: &FileEntry, data: &[u8], cache: &mut MutexGuard<Lru
             uri: create_file_with_random_uri(),
         };
         fs::write(&new_cache_entry.uri, &data);
-        cache.put(file.clone(), new_cache_entry);
+        cache.put(file.name.clone(), new_cache_entry);
     };
     let mut used_cache = state.used_cache_bytes.write().unwrap();
     *used_cache += data.len();
@@ -70,7 +70,7 @@ pub fn restore_cache(state: &Arc<DaemonState>) {
     if let Ok(cache_file) = fs::File::open("cache") {
         let mut cache = state.cache.lock().unwrap();
         *state.used_cache_bytes.write().unwrap() = serde_bare::from_reader(&cache_file).expect("Failed to readed from cache file");
-        while let Ok(key) = serde_bare::from_reader::<_, FileEntry>(&cache_file) {
+        while let Ok(key) = serde_bare::from_reader::<_, String>(&cache_file) {
             let value = serde_bare::from_reader(&cache_file).unwrap();
             cache.put(key.clone(), value);
             cache.demote(&key);
@@ -150,36 +150,31 @@ pub async fn build_file_system(connection: Connection, state: &Arc<DaemonState>)
 }
 
 pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
-    let mut cache = state.cache.lock().unwrap();
-    let cache_entry = cache.get(&file);
-    let _fs_lock = state.file_system.read().unwrap();
-    let cache_last_update_time = if let Some(cache_entry) = cache_entry {
-        if let Ok(file_data) = fs::metadata(&cache_entry.uri) {
-            file_data.modified().ok()
-        }
-        else {
-            None
-        }
-    }
-    else {
-        None
+    // Collect what we need from the cache and release the lock before any async work.
+    let (cache_last_update_time, cached_uri) = {
+        let cache = state.cache.lock().unwrap();
+        let entry = cache.peek(&file.name);
+        let mtime = entry.and_then(|e| fs::metadata(&e.uri).ok())
+            .and_then(|m| m.modified().ok());
+        let uri = entry.map(|e| e.uri.clone());
+        (mtime, uri)
     };
+
     if let Some(file_owner_connection) = get_connection(&file.owner, state).await {
         match file_owner_connection.open_bi().await {
             Ok((mut send, mut recv)) => {
                 send_message(&mut send, DaemonRequest::Read(file.uri.clone(), cache_last_update_time)).await;
-                
+
                 match receive_message(&mut recv).await {
                     Ok(DaemonResponse::Read(Ok(()))) => {
-
                         let buf = receive_message::<Vec<u8>>(&mut recv).await.unwrap();
-
+                        let mut cache = state.cache.lock().unwrap();
                         add_cache_entry(&file, &buf, &mut cache, state);
-
                         return Ok(buf)
                     },
                     Ok(DaemonResponse::Read(Err(VPFSError::NotModified))) => {
-                        return Ok(fs::read(&cache_entry.unwrap().uri).expect("Missing file for cache entry"))
+                        let uri = cached_uri.expect("NotModified response but no cache entry");
+                        return Ok(fs::read(&uri).expect("Missing file for cache entry"))
                     }
                     Ok(DaemonResponse::Read(Err(error))) => {
                         return Err(error)
@@ -188,7 +183,7 @@ pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<V
                     Err(_) => {
                         todo!("Check if error came from bad response, or from connection closing")
                     }
-                }                
+                }
             }
             Err(e) => {
                 eprintln!("Error opening bi-directional stream: {}", e);
@@ -197,10 +192,10 @@ pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<V
         }
     }
     else {
-        if let Some(cache_entry) =  cache_entry{
+        if let Some(uri) = cached_uri {
             let cache_entry_file = FileEntry {
                 owner: state.local.name.clone(),
-                uri: cache_entry.uri.clone(),
+                uri,
                 name: file.name.clone()
             };
             Err(VPFSError::OnlyInCache(cache_entry_file))

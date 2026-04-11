@@ -13,7 +13,7 @@ pub(crate) struct DaemonState {
     pub local: VPFSNode,
     pub connections: Mutex<HashMap<String, Arc<Connection>>>, // name of node -> connection
     pub known_nodes: Mutex<HashMap<String, PublicKey>>,  // name of node -> public key
-    pub cache: Mutex<LruCache<FileEntry, CacheEntry>>,
+    pub cache: Mutex<LruCache<String, CacheEntry>>,
     pub max_cache_size: usize,
     pub used_cache_bytes: RwLock<usize>,
     pub file_system: RwLock<HashMap<String, FileEntry>>, // path -> file entry

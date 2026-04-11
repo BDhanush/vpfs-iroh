@@ -173,6 +173,12 @@ async fn handle_client_write(stream: &mut TcpStream, file: FileEntry, file_len: 
     println!("handle client write for file: {:?}", file);
 
     if file.owner == state.local.name {
+        let needs_placement = state.cache.lock().unwrap()
+            .get(&file.name)
+            .is_some_and(|e| e.uri == file.uri);
+        if needs_placement {
+            place_file_in_memory(&state.file_system, &file.name, file.clone());
+        }
         let buf = receive_buf_tcp(stream, file_len).unwrap();
         if write_local(&file.uri, &buf, &state.file_system).is_ok() {
             send_message_tcp(stream, ClientResponse::Write(Ok(file_len)));
@@ -192,10 +198,40 @@ async fn handle_client_write(stream: &mut TcpStream, file: FileEntry, file_len: 
                 }
                 
             }
-            Err(e) => eprintln!("Error opening bi-directional stream: {}", e),
+            Err(e) => {
+                eprintln!("Error opening bi-directional stream: {}", e);
+                receive_buf_tcp(stream, file_len).ok();
+                let cache_entry_file = {
+                    let cache = state.cache.lock().unwrap();
+                    cache.peek(&file.name).map(|e| FileEntry {
+                        owner: state.local.name.clone(),
+                        uri: e.uri.clone(),
+                        name: file.name.clone(),
+                    })
+                };
+                if cache_entry_file.is_some() {
+                    send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::OnlyInCache(cache_entry_file.unwrap()))));
+                } else {
+                    send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::NotAccessible)));
+                }
+            }
         }
     } else {
-        send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::NotAccessible)));
+        receive_buf_tcp(stream, file_len).ok();
+        let cache_entry_file = {
+            let cache = state.cache.lock().unwrap();
+            cache.peek(&file.name).map(|e| FileEntry {
+                owner: state.local.name.clone(),
+                uri: e.uri.clone(),
+                name: file.name.clone(),
+            })
+        };
+
+        if cache_entry_file.is_some() {
+            send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::OnlyInCache(cache_entry_file.unwrap()))));
+        } else {
+            send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::NotAccessible)));
+        }
     }
 }
 
