@@ -2,6 +2,7 @@ use iroh::{Endpoint, PublicKey};
 use iroh::endpoint::Connection;
 use lru::LruCache;
 use std::fs::File;
+use std::net::TcpStream;
 use std::sync::{Arc, Mutex, RwLock};
 use std::collections::{BTreeMap, HashMap, HashSet};
 

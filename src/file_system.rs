@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
+use std::net::TcpStream;
 use std::os::fd::{AsRawFd, IntoRawFd};
 use std::result;
 use std::{fs, io::{Read, Write}};
@@ -13,7 +14,7 @@ use rand::rand_core::le;
 
 use std::sync::MutexGuard;
 
-use crate::{file_system, messages::*};
+use crate::{file_system, messages::*, receive_message_tcp, send_message_tcp};
 
 use crate::state::DaemonState;
 
@@ -89,6 +90,67 @@ pub fn restore_file_system(state: &Arc<DaemonState>) {
     }
 }
 
+pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection,state: &Arc<DaemonState>) {
+
+    match connection.open_bi().await {
+        Ok((mut send, mut recv)) => {
+            let msg = DaemonRequest::FileSystem;
+            send_message(&mut send, msg).await;
+            let mut send_remote: Vec<FileEntry> = Vec::new();
+
+            match receive_message::<DaemonResponse>(&mut recv).await {
+                Ok(DaemonResponse::FileSystem(remote_file_system)) => {
+                    let local_file_system = state.file_system.read().unwrap().clone();
+                    
+                    for (path, remote_entry) in remote_file_system.clone() {
+                        if let Some(local_entry) = local_file_system.get(&path) {
+                            if local_entry.uri != remote_entry.uri || local_entry.owner != remote_entry.owner {
+                                println!("Conflict detected for file: {}, local entry: {:?}, remote entry: {:?}", path, local_entry, remote_entry);
+                                
+                                let to_send = vec![local_entry.clone(), remote_entry.clone()];
+                                send_message_tcp(&mut stream, ConflictResolutionRequest::Versions(to_send));
+                                if let Ok(ConflictResolutionResponse::FinalVersion(final_entry)) = receive_message_tcp(&mut stream) {
+                                    println!("Final version for file {}: {:?}", path, final_entry);
+
+                                    if final_entry.uri != local_entry.uri {
+                                        state.file_system.write().unwrap().insert(path.clone(), final_entry);
+                                        
+                                        let mut cache = state.cache.lock().unwrap();
+                                        if let Some(evicted) = cache.pop(&path) {
+                                            let file_size = fs::metadata(&evicted.uri).map(|m| m.len()).unwrap_or(0);
+                                            fs::remove_file(&evicted.uri).ok();
+                                            *state.used_cache_bytes.write().unwrap() -= file_size as usize;
+                                        }
+                                    } else {
+                                        send_remote.push(final_entry);
+                                    }
+                                }
+                            }
+                        } else {
+                            state.file_system.write().unwrap().insert(path, remote_entry);
+                        }
+                    }
+
+                    for (path, local_entry) in local_file_system {
+                        if !remote_file_system.contains_key(&path) {
+                            send_remote.push(local_entry);
+                        }
+                    }
+
+                    let msg = DaemonRequest::UpdatedFiles(send_remote);
+                    send_message(&mut send, msg).await;
+                },
+                Ok(_) => {
+                    eprintln!("Unexpected response");
+                }
+                Err(e) => { eprintln!("Error: {}", e); }
+            }
+
+        }
+        Err(e) => eprintln!("Error opening bi-directional stream: {}", e),
+    }
+}
+
 pub fn read_local(uri: &str, file_system: &RwLock<HashMap<String, FileEntry>>) -> io::Result<Vec<u8>> {
     fs::read(uri).map_err(|_| io::Error::from(io::ErrorKind::NotFound))
 }
@@ -123,7 +185,7 @@ pub fn create_file_with_random_uri() -> String {
     uri
 }
 
-pub async fn build_file_system(connection: Connection, state: &Arc<DaemonState>) {
+pub async fn build_file_system(connection: &Connection, state: &Arc<DaemonState>) {
     println!("Building file system from connection: {}", connection.remote_id());
     match connection.open_bi().await {
         Ok((mut send, mut recv)) => {

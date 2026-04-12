@@ -152,6 +152,12 @@ impl VPFSProtocol {
                     };
                     send_message(&mut send, DaemonResponse::FileSystem(data)).await;
                 }
+                Ok(DaemonRequest::UpdatedFiles(updated_files)) => {
+                    let mut file_system = self.state.file_system.write().unwrap();
+                    for entry in updated_files {
+                        file_system.insert(entry.name.clone(), entry);
+                    }
+                }
                 Ok(_) => eprintln!("Unexpected message from {remote_id}"),
                 Err(e) => eprintln!("Error receiving message from {remote_id}: {:?}", e),
             }

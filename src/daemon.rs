@@ -34,17 +34,20 @@ use file_system::*;
 #[derive(Parser, Debug)]
 #[command(name = "vpfs", about = "Virtual private file system iroh prototype.")]
 struct Opt {
-    #[arg(short, long, default_value_t = 8080)]
+    #[arg(short, long, default_value_t = 8081)]
     port: u16,
 
     #[arg(short, long, default_value_t = 8082)]
     listen_port: u16,
 
+    #[arg(short, long, default_value_t = 8083)]
+    conflict_port: u16,
+
     #[arg(short, long)]
     remote_id: Option<PublicKey>,
 
     //Maximum cache size in bytes
-    #[arg(short, long, default_value_t = 1 << 16)]
+    #[arg(short = 's', long, default_value_t = 1 << 16)]
     cache_size: usize,
 
     #[arg(short, long)]
@@ -365,13 +368,21 @@ async fn main() -> Result<()> {
         if connection.is_none() {
             panic!("Could not connect")
         }
+        let connection = connection.unwrap();
         println!("Connected to network");
         let new_node = setup_files_dir();
         if new_node {
-            build_file_system(connection.unwrap(), &state).await;
+            build_file_system(&connection, &state).await;
         } else {
             restore_file_system(&state);
         }
+
+        let conflict_address = format!("127.0.0.1:{}", opt.conflict_port);
+        println!("Connecting to conflict resolution client on {}", conflict_address);
+        let mut conflict_stream = TcpStream::connect(&conflict_address).unwrap();
+        println!("Connected to conflict resolution client");
+
+        check_conflicts(conflict_stream, &connection, &state).await;
         // println!("built file system");
 
         establish_connections(&state).await;

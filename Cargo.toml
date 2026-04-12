@@ -33,3 +33,7 @@ path="src/applications/cat.rs"
 [[bin]]
 name="cat2"
 path="src/applications/cat2.rs"
+
+[[bin]]
+name="conflict_resolver"
+path="src/conflict_resolver.rs"

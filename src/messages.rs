@@ -24,7 +24,7 @@ pub enum LogOp {
     Remove(FileEntry),
 }
 
-#[derive(Serialize,Deserialize,Clone,Debug)]
+#[derive(Serialize,Deserialize,Clone,Debug,Eq,PartialEq)]
 pub struct LogEntry {
     version_vec: HashMap<String, i32>,
     op: LogOp,
@@ -72,6 +72,7 @@ pub enum VPFSError {
 pub enum DaemonRequest {
     Place,
     FileSystem,
+    UpdatedFiles(Vec<FileEntry>),
     AddEntry(String, FileEntry),
     Open(String),
     Read(String, Option<SystemTime>),
@@ -133,4 +134,14 @@ pub enum ClientResponse {
     Read(Result<usize, VPFSError>),
     /// usize is number of bytes written
     Write(Result<usize, VPFSError>),
+}
+
+#[derive(Serialize,Deserialize)]
+pub enum ConflictResolutionRequest {
+    Versions(Vec<FileEntry>)
+}
+
+#[derive(Serialize,Deserialize)]
+pub enum ConflictResolutionResponse {
+    FinalVersion(FileEntry)
 }
