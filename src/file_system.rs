@@ -91,13 +91,13 @@ pub fn restore_file_system(state: &Arc<DaemonState>) {
 }
 
 pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection,state: &Arc<DaemonState>) {
-
+    let mut send_remote: Vec<FileEntry> = Vec::new();
+    
     match connection.open_bi().await {
         Ok((mut send, mut recv)) => {
             let msg = DaemonRequest::FileSystem;
             send_message(&mut send, msg).await;
-            let mut send_remote: Vec<FileEntry> = Vec::new();
-
+            
             match receive_message::<DaemonResponse>(&mut recv).await {
                 Ok(DaemonResponse::FileSystem(remote_file_system)) => {
                     let local_file_system = state.file_system.read().unwrap().clone();
@@ -137,17 +137,21 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection,stat
                         }
                     }
 
-                    let msg = DaemonRequest::UpdatedFiles(send_remote);
-                    send_message(&mut send, msg).await;
                 },
                 Ok(_) => {
                     eprintln!("Unexpected response");
                 }
                 Err(e) => { eprintln!("Error: {}", e); }
             }
-
+            
         }
         Err(e) => eprintln!("Error opening bi-directional stream: {}", e),
+    }
+
+    if let Ok((mut send, _)) = connection.open_bi().await {
+        send_message(&mut send, DaemonRequest::UpdatedFiles(send_remote)).await;
+    } else {
+        eprintln!("Error opening bi-directional stream for sending updates");
     }
 }
 
