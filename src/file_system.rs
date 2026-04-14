@@ -137,6 +137,8 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection,stat
                         }
                     }
 
+                    save_file_system(&state.file_system.read().unwrap());
+
                 },
                 Ok(_) => {
                     eprintln!("Unexpected response");
@@ -202,6 +204,8 @@ pub async fn build_file_system(connection: &Connection, state: &Arc<DaemonState>
                     for (path, entry) in data {
                         file_system.entry(path).or_insert(entry);
                     }
+                    save_file_system(&file_system);
+
                 },
                 Ok(_) => {
                     eprintln!("Unexpected response");
@@ -272,15 +276,19 @@ pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<V
     }
 }
 
+pub fn save_file_system(file_system: &HashMap<String, FileEntry>) {
+    let fs_file = fs::File::create("file_system").expect("Failed to create file_system file");
+    for (path, entry) in file_system.iter() {
+        serde_bare::to_writer(&fs_file, path).expect("Failed to write path to file_system file");
+        serde_bare::to_writer(&fs_file, entry).expect("Failed to write entry to file_system file");
+    }
+}
+
 pub fn place_file_in_memory(file_system: &RwLock<HashMap<String, FileEntry>>, path: &str, new_file: FileEntry) {
     println!("Placing file in memory at path: {}, with uri: {}, owner: {}", path, new_file.uri, new_file.owner);
     let mut fs = file_system.write().unwrap();
     fs.insert(path.to_string(), new_file);
-    let fs_file = fs::File::create("file_system").expect("Failed to create file_system file");
-    for (path, entry) in fs.iter() {
-        serde_bare::to_writer(&fs_file, path).expect("Failed to write path to file_system file");
-        serde_bare::to_writer(&fs_file, entry).expect("Failed to write entry to file_system file");
-    }
+    save_file_system(&fs);
 }
 
 pub async fn place_file(path: &str, at: &String, state: &Arc<DaemonState>) -> Result<FileEntry, VPFSError>{

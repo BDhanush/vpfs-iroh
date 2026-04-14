@@ -157,6 +157,7 @@ impl VPFSProtocol {
                     for entry in updated_files {
                         file_system.insert(entry.name.clone(), entry);
                     }
+                    save_file_system(&file_system);
                 }
                 Ok(_) => eprintln!("Unexpected message from {remote_id}"),
                 Err(e) => eprintln!("Error receiving message from {remote_id}: {:?}", e),
@@ -183,8 +184,8 @@ impl VPFSProtocol {
                         let mut connections = self.state.connections.lock().unwrap();
                         connections.insert(node.name.clone(), conn.clone());
                     }
-                    for (name, connection) in self.state.connections.lock().unwrap().iter() {
-                        println!("known node: {}, {:?}", name, connection.close_reason());
+                    for (name, endpoint_id) in self.state.known_nodes.lock().unwrap().iter() {
+                        println!("known node: {}, endpoint_id: {}", name, endpoint_id);
                     }
                     for (name, connection) in self.state.connections.lock().unwrap().iter() {
                         println!("connection: {}, {:?}", name, connection.close_reason());
