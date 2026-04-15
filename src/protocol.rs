@@ -83,7 +83,7 @@ impl VPFSProtocol {
                             let _fs_lock = self.state.file_system.read().unwrap();
                             if let Ok(file_data) = fs::metadata(&uri) {
                                 if let Ok(local_last_modified) = file_data.modified() {
-                                    local_last_modified >= remote_last_modified
+                                    local_last_modified != remote_last_modified
                                 } else { true }
                             } else { true }
                         } else {

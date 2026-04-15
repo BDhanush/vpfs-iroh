@@ -220,6 +220,7 @@ pub async fn build_file_system(connection: &Connection, state: &Arc<DaemonState>
 }
 
 pub async fn read_remote(file: &FileEntry, state: &Arc<DaemonState>) -> Result<Vec<u8>, VPFSError> {
+    println!("Read remote file: {}, owner: {}, uri: {}", file.name, file.owner, file.uri);
     // Collect what we need from the cache and release the lock before any async work.
     let (cache_last_update_time, cached_uri) = {
         let cache = state.cache.lock().unwrap();
