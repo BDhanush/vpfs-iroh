@@ -112,11 +112,13 @@ impl VPFSProtocol {
 
                     let buf=receive_message::<Vec<u8>>(&mut recv).await.unwrap();
                     if write_local(&uri, &buf, &self.state.file_system).is_ok() {
-                        // Log the modification
-                        if let Some(file_entry) = self.state.file_system.read().unwrap()
-                            .values().find(|e| e.uri == uri).cloned()
-                        {
-                            append_log_entry(LogOp::Modify(file_entry), &self.state);
+                        // Log the modification — read guard must be dropped before awaiting
+                        let file_entry: Option<FileEntry> = {
+                            self.state.file_system.read().unwrap()
+                                .values().find(|e| e.uri == uri).cloned()
+                        };
+                        if let Some(file_entry) = file_entry {
+                            append_log_entry(LogOp::Modify(file_entry), &self.state).await;
                         }
                         send_message(&mut send, DaemonResponse::Write(Ok(buf.len()))).await;
                     } else {
@@ -126,14 +128,16 @@ impl VPFSProtocol {
                 Ok(DaemonRequest::Remove(uri)) => {
                     let file_entry = self.state.file_system.read().unwrap()
                         .values().find(|e| e.uri == uri).cloned();
-                    let result = {
-                        let _fs_lock = self.state.file_system.write().unwrap();
-                        fs::remove_file(&uri).is_ok()
-                    };
+                    let result = fs::remove_file(&uri).is_ok();
 
                     if result {
                         if let Some(entry) = file_entry {
-                            append_log_entry(LogOp::Remove(entry), &self.state);
+                            {
+                                let mut fs = self.state.file_system.write().unwrap();
+                                fs.remove(&entry.name);
+                                save_file_system(&fs);
+                            } // write guard dropped here before await
+                            append_log_entry(LogOp::Remove(entry), &self.state).await;
                         }
                         send_message(&mut send, DaemonResponse::Remove(Ok(()))).await;
                     } else {
@@ -166,6 +170,13 @@ impl VPFSProtocol {
                 Ok(DaemonRequest::UpdatedFiles(updated_files)) => {
                     let mut file_system = self.state.file_system.write().unwrap();
                     for entry in updated_files {
+                        let mut cache = self.state.cache.lock().unwrap();
+                        if let Some(evicted) = cache.pop(&entry.name) {
+                            let size = fs::metadata(&evicted.uri).map(|m| m.len() as usize).unwrap_or(0);
+                            fs::remove_file(&evicted.uri).ok();
+                            *self.state.used_cache_bytes.write().unwrap() -= size;
+                        }
+                        drop(cache);
                         file_system.insert(entry.name.clone(), entry);
                     }
                     save_file_system(&file_system);

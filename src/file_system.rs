@@ -65,16 +65,30 @@ pub fn partial_log_since(log: &[LogEntry], since: &HashMap<String, u64>) -> Vec<
         .collect()
 }
 
-/// Tick the clock, build a LogEntry, append to the log, and persist it.
-pub fn append_log_entry(op: LogOp, state: &Arc<DaemonState>) {
+/// Tick the clock, build a LogEntry, append to the log, persist it, and push it to all peers.
+pub async fn append_log_entry(op: LogOp, state: &Arc<DaemonState>) {
     let clock_snapshot = {
         let mut vc = state.vector_clock.lock().unwrap();
         tick_and_snapshot(&state.local.name, &mut vc)
     };
     let entry = LogEntry { clock: clock_snapshot, node: state.local.name.clone(), op };
-    let mut log = state.log.lock().unwrap();
-    log.push(entry);
-    save_log(&log);
+    {
+        let mut log = state.log.lock().unwrap();
+        log.push(entry.clone());
+        save_log(&log);
+    }
+
+    // Fan out the new entry to every active peer connection.
+    let connections: Vec<Arc<Connection>> = {
+        let conns = state.connections.lock().unwrap();
+        conns.values().filter(|c| c.close_reason().is_none()).cloned().collect()
+    };
+    for conn in connections {
+        if let Ok((mut send, mut recv)) = conn.open_bi().await {
+            let _ = send_message(&mut send, DaemonRequest::UpdateLog(vec![entry.clone()])).await;
+            let _ = receive_message::<DaemonResponse>(&mut recv).await;
+        }
+    }
 }
 
 pub fn save_log(log: &[LogEntry]) {
@@ -114,17 +128,17 @@ pub fn setup_files_dir() -> bool {
 }
 
 pub fn add_cache_entry(file: &FileEntry, data: &[u8], cache: &mut MutexGuard<LruCache<String, CacheEntry>>, state: &Arc<DaemonState>) {
-    if let Some(cache_entry) = cache.get(&file.name) {
-        fs::write(&cache_entry.uri, &data);
-    }
-    else {
-        let new_cache_entry = CacheEntry {
-            uri: create_file_with_random_uri(),
-        };
-        fs::write(&new_cache_entry.uri, &data);
-        cache.put(file.name.clone(), new_cache_entry);
+    let old_size = if let Some(existing) = cache.peek(&file.name) {
+        fs::metadata(&existing.uri).map(|m| m.len() as usize).unwrap_or(0)
+    } else {
+        0
     };
+    let new_cache_entry = CacheEntry { uri: file.uri.clone() };
+    fs::write(&new_cache_entry.uri, &data);
+    cache.put(file.name.clone(), new_cache_entry);
+
     let mut used_cache = state.used_cache_bytes.write().unwrap();
+    *used_cache = used_cache.saturating_sub(old_size);
     *used_cache += data.len();
     // Evict elements to make room in cache
     while *used_cache > state.max_cache_size {
@@ -153,8 +167,7 @@ pub fn restore_cache(state: &Arc<DaemonState>) {
         *state.used_cache_bytes.write().unwrap() = serde_bare::from_reader(&cache_file).expect("Failed to readed from cache file");
         while let Ok(key) = serde_bare::from_reader::<_, String>(&cache_file) {
             let value = serde_bare::from_reader(&cache_file).unwrap();
-            cache.put(key.clone(), value);
-            cache.demote(&key);
+            cache.put(key, value);
         }
     }
 }
@@ -454,7 +467,7 @@ pub async fn place_file(path: &str, at: &String, state: &Arc<DaemonState>) -> Re
         name: path.to_string(),
     };
     place_file_in_memory(&state.file_system, path, new_file.clone());
-    append_log_entry(LogOp::Create(new_file.clone()), state);
+    append_log_entry(LogOp::Create(new_file.clone()), state).await;
 
     let connections: Vec<Arc<Connection>> = {
         let conns = state.connections.lock().unwrap();

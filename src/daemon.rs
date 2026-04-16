@@ -176,15 +176,29 @@ async fn handle_client_write(stream: &mut TcpStream, file: FileEntry, file_len: 
     println!("handle client write for file: {:?}", file);
 
     if file.owner == state.local.name {
-        let needs_placement = state.cache.lock().unwrap()
-            .get(&file.name)
-            .is_some_and(|e| e.uri == file.uri);
-        if needs_placement {
-            place_file_in_memory(&state.file_system, &file.name, file.clone());
-        }
+
+        // Evict cache entry if it exists; only then generate a new URI
+        let write_uri = {
+            let mut cache = state.cache.lock().unwrap();
+            if let Some(evicted) = cache.pop(&file.name) {
+                let file_size = fs::metadata(&evicted.uri).map(|m| m.len()).unwrap_or(0);
+                fs::remove_file(&evicted.uri).ok();
+                *state.used_cache_bytes.write().unwrap() -= file_size as usize;
+                let new_uri = create_file_with_random_uri();
+                new_uri
+            } else {
+                file.uri.clone()
+            }
+        };
+        
+        let mut file = file;
+        file.uri = write_uri.clone();
+
+        place_file_in_memory(&state.file_system, &file.name, file.clone());
+
         let buf = receive_buf_tcp(stream, file_len).unwrap();
         if write_local(&file.uri, &buf, &state.file_system).is_ok() {
-            append_log_entry(LogOp::Modify(file.clone()), &state);
+            append_log_entry(LogOp::Modify(file.clone()), &state).await;
             send_message_tcp(stream, ClientResponse::Write(Ok(file_len)));
         } else {
             send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::DoesNotExist)));
