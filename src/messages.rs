@@ -26,8 +26,9 @@ pub enum LogOp {
 
 #[derive(Serialize,Deserialize,Clone,Debug,Eq,PartialEq)]
 pub struct LogEntry {
-    version_vec: HashMap<String, i32>,
-    op: LogOp,
+    pub clock: HashMap<String, u64>,
+    pub node: String,
+    pub op: LogOp,
 }
 
 #[derive(Serialize,Deserialize,Clone,Eq,Hash,PartialEq,Debug)]
@@ -83,6 +84,10 @@ pub enum DaemonRequest {
     Remove(String),
     /// to request for endpoint_id of node given node_name
     AddressFor(String),
+    /// Request log entries newer than the given vector clock
+    LogSince(HashMap<String, u64>),
+    /// Push log entries to remote for merging
+    UpdateLog(Vec<LogEntry>),
 }
 
 /// Responses to a daemon from a daemon for requests
@@ -101,6 +106,9 @@ pub enum DaemonResponse {
     Remove(Result<(), VPFSError>),
     /// `endpoint_id` for node given name
     AddressFor(Option<PublicKey>),
+    /// Partial log entries + remote node's current vector clock
+    Log(Vec<LogEntry>, HashMap<String, u64>),
+    UpdateLog,
 }
 
 /// Requests from client to daemon

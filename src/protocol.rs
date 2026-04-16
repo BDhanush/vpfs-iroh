@@ -112,18 +112,29 @@ impl VPFSProtocol {
 
                     let buf=receive_message::<Vec<u8>>(&mut recv).await.unwrap();
                     if write_local(&uri, &buf, &self.state.file_system).is_ok() {
+                        // Log the modification
+                        if let Some(file_entry) = self.state.file_system.read().unwrap()
+                            .values().find(|e| e.uri == uri).cloned()
+                        {
+                            append_log_entry(LogOp::Modify(file_entry), &self.state);
+                        }
                         send_message(&mut send, DaemonResponse::Write(Ok(buf.len()))).await;
                     } else {
                         send_message(&mut send, DaemonResponse::Write(Err(VPFSError::DoesNotExist))).await;
                     }
                 }
                 Ok(DaemonRequest::Remove(uri)) => {
+                    let file_entry = self.state.file_system.read().unwrap()
+                        .values().find(|e| e.uri == uri).cloned();
                     let result = {
                         let _fs_lock = self.state.file_system.write().unwrap();
-                        fs::remove_file(uri).is_ok()
+                        fs::remove_file(&uri).is_ok()
                     };
 
                     if result {
+                        if let Some(entry) = file_entry {
+                            append_log_entry(LogOp::Remove(entry), &self.state);
+                        }
                         send_message(&mut send, DaemonResponse::Remove(Ok(()))).await;
                     } else {
                         send_message(&mut send, DaemonResponse::Remove(Err(VPFSError::DoesNotExist))).await;
@@ -158,6 +169,30 @@ impl VPFSProtocol {
                         file_system.insert(entry.name.clone(), entry);
                     }
                     save_file_system(&file_system);
+                }
+                Ok(DaemonRequest::LogSince(their_clock)) => {
+                    let (partial, our_vc) = {
+                        let log = self.state.log.lock().unwrap();
+                        let partial = partial_log_since(&log, &their_clock);
+                        let our_vc = self.state.vector_clock.lock().unwrap().clone();
+                        (partial, our_vc)
+                    };
+                    send_message(&mut send, DaemonResponse::Log(partial, our_vc)).await;
+                }
+                Ok(DaemonRequest::UpdateLog(entries)) => {
+                    {
+                        let mut vc = self.state.vector_clock.lock().unwrap();
+                        let mut log = self.state.log.lock().unwrap();
+                        for entry in entries {
+                            for (node, &val) in &entry.clock {
+                                let cur = vc.entry(node.clone()).or_insert(0);
+                                if val > *cur { *cur = val; }
+                            }
+                            log.push(entry);
+                        }
+                        save_log(&log);
+                    }
+                    send_message(&mut send, DaemonResponse::UpdateLog).await;
                 }
                 Ok(_) => eprintln!("Unexpected message from {remote_id}"),
                 Err(e) => eprintln!("Error receiving message from {remote_id}: {:?}", e),

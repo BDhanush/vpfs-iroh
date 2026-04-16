@@ -184,6 +184,7 @@ async fn handle_client_write(stream: &mut TcpStream, file: FileEntry, file_len: 
         }
         let buf = receive_buf_tcp(stream, file_len).unwrap();
         if write_local(&file.uri, &buf, &state.file_system).is_ok() {
+            append_log_entry(LogOp::Modify(file.clone()), &state);
             send_message_tcp(stream, ClientResponse::Write(Ok(file_len)));
         } else {
             send_message_tcp(stream, ClientResponse::Write(Err(VPFSError::DoesNotExist)));
@@ -348,7 +349,8 @@ async fn main() -> Result<()> {
         max_cache_size: opt.cache_size,
         used_cache_bytes: RwLock::new(0),
         file_system: RwLock::new(HashMap::new()),
-        log: Vec::new(),
+        vector_clock: Mutex::new(HashMap::from([(opt.name.clone(), 0u64)])),
+        log: Mutex::new(Vec::new()),
         open_files: Mutex::new(HashMap::new())
     };
 
@@ -375,6 +377,7 @@ async fn main() -> Result<()> {
             build_file_system(&connection, &state).await;
         } else {
             restore_file_system(&state);
+            restore_log(&state);
         }
 
         let conflict_address = format!("127.0.0.1:{}", opt.conflict_port);
@@ -402,6 +405,7 @@ async fn main() -> Result<()> {
         let new_node = setup_files_dir();
         if !new_node {
             restore_file_system(&state);
+            restore_log(&state);
         }
     }
 

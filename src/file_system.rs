@@ -20,6 +20,86 @@ use crate::state::DaemonState;
 
 use crate::remote_communication::*;
 
+/// Increment this node's entry in the clock and return a snapshot of the full clock.
+fn tick_and_snapshot(node: &str, vc: &mut HashMap<String, u64>) -> HashMap<String, u64> {
+    *vc.entry(node.to_string()).or_insert(0) += 1;
+    vc.clone()
+}
+
+/// Returns true if every component of `a` is ≤ the corresponding component of `b`,
+/// and `b` is strictly greater in at least one component.
+pub fn happens_before(a: &HashMap<String, u64>, b: &HashMap<String, u64>) -> bool {
+    let all_le = a.iter().all(|(k, v)| *v <= *b.get(k).unwrap_or(&0));
+    let b_strictly_greater = b.iter().any(|(k, v)| *v > *a.get(k).unwrap_or(&0));
+    all_le && b_strictly_greater
+}
+
+/// Returns true if neither clock happens-before the other (and they differ).
+pub fn are_concurrent(a: &HashMap<String, u64>, b: &HashMap<String, u64>) -> bool {
+    !happens_before(a, b) && !happens_before(b, a) && a != b
+}
+
+/// Extract the file path from any log operation.
+pub fn entry_path(op: &LogOp) -> String {
+    match op {
+        LogOp::Create(f) | LogOp::Modify(f) | LogOp::Remove(f) => f.name.clone(),
+    }
+}
+
+/// Extract the FileEntry reference from any log operation.
+pub fn entry_file(op: &LogOp) -> &FileEntry {
+    match op {
+        LogOp::Create(f) | LogOp::Modify(f) | LogOp::Remove(f) => f,
+    }
+}
+
+/// Return the subset of `log` that the `since` clock has not yet observed.
+/// An entry is "unseen" if its creator's own clock value exceeds what `since` records for that node.
+pub fn partial_log_since(log: &[LogEntry], since: &HashMap<String, u64>) -> Vec<LogEntry> {
+    log.iter()
+        .filter(|e| {
+            e.clock.get(&e.node).copied().unwrap_or(0)
+                > since.get(&e.node).copied().unwrap_or(0)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Tick the clock, build a LogEntry, append to the log, and persist it.
+pub fn append_log_entry(op: LogOp, state: &Arc<DaemonState>) {
+    let clock_snapshot = {
+        let mut vc = state.vector_clock.lock().unwrap();
+        tick_and_snapshot(&state.local.name, &mut vc)
+    };
+    let entry = LogEntry { clock: clock_snapshot, node: state.local.name.clone(), op };
+    let mut log = state.log.lock().unwrap();
+    log.push(entry);
+    save_log(&log);
+}
+
+pub fn save_log(log: &[LogEntry]) {
+    let log_file = fs::File::create("log").expect("Failed to create log file");
+    serde_bare::to_writer(&log_file, log).expect("Failed to write log");
+}
+
+/// Restore the log
+pub fn restore_log(state: &Arc<DaemonState>) {
+    if let Ok(log_file) = fs::File::open("log") {
+        if let Ok(log) = serde_bare::from_reader::<_, Vec<LogEntry>>(&log_file) {
+            let mut vc = state.vector_clock.lock().unwrap();
+            for entry in &log {
+                for (node, &val) in &entry.clock {
+                    let cur = vc.entry(node.clone()).or_insert(0);
+                    if val > *cur {
+                        *cur = val;
+                    }
+                }
+            }
+            *state.log.lock().unwrap() = log;
+        }
+    }
+}
+
 /// Create ./files and go to it. Panic if it cannot be created or cd'ed into.
 pub fn setup_files_dir() -> bool {
     if let Err(err) = fs::create_dir("./files") {
@@ -90,70 +170,132 @@ pub fn restore_file_system(state: &Arc<DaemonState>) {
     }
 }
 
-pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection,state: &Arc<DaemonState>) {
-    let mut send_remote: Vec<FileEntry> = Vec::new();
-    
-    match connection.open_bi().await {
+pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, state: &Arc<DaemonState>) {
+    // Get remote node's partial log from where we last synced
+    let our_vc = state.vector_clock.lock().unwrap().clone();
+
+    let (remote_entries, remote_vc) = match connection.open_bi().await {
         Ok((mut send, mut recv)) => {
-            let msg = DaemonRequest::FileSystem;
-            send_message(&mut send, msg).await;
-            
+            send_message(&mut send, DaemonRequest::LogSince(our_vc)).await;
             match receive_message::<DaemonResponse>(&mut recv).await {
-                Ok(DaemonResponse::FileSystem(remote_file_system)) => {
-                    let local_file_system = state.file_system.read().unwrap().clone();
-                    
-                    for (path, remote_entry) in remote_file_system.clone() {
-                        if let Some(local_entry) = local_file_system.get(&path) {
-                            if local_entry.uri != remote_entry.uri || local_entry.owner != remote_entry.owner {
-                                println!("Conflict detected for file: {}, local entry: {:?}, remote entry: {:?}", path, local_entry, remote_entry);
-                                
-                                let to_send = vec![local_entry.clone(), remote_entry.clone()];
-                                send_message_tcp(&mut stream, ConflictResolutionRequest::Versions(to_send));
-                                if let Ok(ConflictResolutionResponse::FinalVersion(final_entry)) = receive_message_tcp(&mut stream) {
-                                    println!("Final version for file {}: {:?}", path, final_entry);
-
-                                    if final_entry.uri != local_entry.uri {
-                                        state.file_system.write().unwrap().insert(path.clone(), final_entry);
-                                        
-                                        let mut cache = state.cache.lock().unwrap();
-                                        if let Some(evicted) = cache.pop(&path) {
-                                            let file_size = fs::metadata(&evicted.uri).map(|m| m.len()).unwrap_or(0);
-                                            fs::remove_file(&evicted.uri).ok();
-                                            *state.used_cache_bytes.write().unwrap() -= file_size as usize;
-                                        }
-                                    } else {
-                                        send_remote.push(final_entry);
-                                    }
-                                }
-                            }
-                        } else {
-                            state.file_system.write().unwrap().insert(path, remote_entry);
-                        }
-                    }
-
-                    for (path, local_entry) in local_file_system {
-                        if !remote_file_system.contains_key(&path) {
-                            send_remote.push(local_entry);
-                        }
-                    }
-
-                    save_file_system(&state.file_system.read().unwrap());
-
-                },
-                Ok(_) => {
-                    eprintln!("Unexpected response");
-                }
-                Err(e) => { eprintln!("Error: {}", e); }
+                Ok(DaemonResponse::Log(entries, vc)) => (entries, vc),
+                Ok(_) => { eprintln!("Unexpected response to LogSince"); return; }
+                Err(e) => { eprintln!("Error receiving log: {}", e); return; }
             }
-            
         }
-        Err(e) => eprintln!("Error opening bi-directional stream: {}", e),
+        Err(e) => { eprintln!("Error opening stream for LogSince: {}", e); return; }
+    };
+
+    // each file's last log entry
+    let mut remote_last: HashMap<String, LogEntry> = HashMap::new();
+    for entry in &remote_entries {
+        remote_last.insert(entry_path(&entry.op), entry.clone());
     }
 
+    let local_unseen: Vec<LogEntry> = {
+        let local_log = state.log.lock().unwrap();
+        partial_log_since(&local_log, &remote_vc)
+    };
+    let mut local_last: HashMap<String, LogEntry> = HashMap::new();
+    for entry in &local_unseen {
+        local_last.insert(entry_path(&entry.op), entry.clone());
+    }
+
+    // Compare and resolve
+    let mut send_remote: Vec<FileEntry> = Vec::new();
+    let local_file_system = state.file_system.read().unwrap().clone();
+
+    for (path, remote_entry) in &remote_last {
+        let remote_file = entry_file(&remote_entry.op).clone();
+
+        if let Some(local_entry) = local_last.get(path) {
+            let local_file = entry_file(&local_entry.op).clone();
+
+            if are_concurrent(&local_entry.clock, &remote_entry.clock) {
+                println!("Conflict (concurrent) for file: {}", path);
+                let to_send = vec![local_file.clone(), remote_file.clone()];
+                send_message_tcp(&mut stream, ConflictResolutionRequest::Versions(to_send));
+                if let Ok(ConflictResolutionResponse::FinalVersion(final_entry)) = receive_message_tcp(&mut stream) {
+                    println!("Resolved file {}: {:?}", path, final_entry);
+                    if final_entry.uri != local_file.uri {
+                        // Remote version won — update local file system and evict cache
+                        state.file_system.write().unwrap().insert(path.clone(), final_entry);
+                        let mut cache = state.cache.lock().unwrap();
+                        if let Some(evicted) = cache.pop(path) {
+                            let file_size = fs::metadata(&evicted.uri).map(|m| m.len()).unwrap_or(0);
+                            fs::remove_file(&evicted.uri).ok();
+                            *state.used_cache_bytes.write().unwrap() -= file_size as usize;
+                        }
+                    } else {
+                        // Local version won, remote needs to update
+                        send_remote.push(final_entry);
+                    }
+                }
+            } else if happens_before(&local_entry.clock, &remote_entry.clock) {
+                // Remote is strictly newer, accept it
+                println!("Remote newer for file: {}", path);
+                state.file_system.write().unwrap().insert(path.clone(), remote_file);
+                let mut cache = state.cache.lock().unwrap();
+                if let Some(evicted) = cache.pop(path) {
+                    let file_size = fs::metadata(&evicted.uri).map(|m| m.len()).unwrap_or(0);
+                    fs::remove_file(&evicted.uri).ok();
+                    *state.used_cache_bytes.write().unwrap() -= file_size as usize;
+                }
+            } else {
+                // Local is newer (or equal), send to remote
+                if let Some(local_fs_entry) = local_file_system.get(path) {
+                    send_remote.push(local_fs_entry.clone());
+                }
+            }
+        } else if !matches!(&remote_entry.op, LogOp::Remove(_)) {
+            // File only exists on remote, add it locally
+            println!("New remote file: {}", path);
+            state.file_system.write().unwrap().insert(path.clone(), remote_file);
+        }
+    }
+
+    // Files only in local log, send to remote
+    for (path, _) in &local_last {
+        if !remote_last.contains_key(path) {
+            if let Some(entry) = local_file_system.get(path) {
+                send_remote.push(entry.clone());
+            }
+        }
+    }
+
+    save_file_system(&state.file_system.read().unwrap());
+
+    // Merge remote log entries into local
+    {
+        let mut vc = state.vector_clock.lock().unwrap();
+        let mut log = state.log.lock().unwrap();
+        for entry in &remote_entries {
+            for (node, &val) in &entry.clock {
+                let cur = vc.entry(node.clone()).or_insert(0);
+                if val > *cur { *cur = val; }
+            }
+            log.push(entry.clone());
+        }
+        save_log(&log);
+    }
+
+    // Push new partial log to remote
+    let our_partial = {
+        let log = state.log.lock().unwrap();
+        partial_log_since(&log, &remote_vc)
+    };
+    if let Ok((mut send, mut recv)) = connection.open_bi().await {
+        send_message(&mut send, DaemonRequest::UpdateLog(our_partial)).await;
+        let _ = receive_message::<DaemonResponse>(&mut recv).await;
+    } else {
+        eprintln!("Error opening stream for UpdateLog");
+    }
+
+    // Send file entries for updates
     if let Ok((mut send, _)) = connection.open_bi().await {
         send_message(&mut send, DaemonRequest::UpdatedFiles(send_remote)).await;
     } else {
-        eprintln!("Error opening bi-directional stream for sending updates");
+        eprintln!("Error opening stream for UpdatedFiles");
     }
 }
 
@@ -312,6 +454,7 @@ pub async fn place_file(path: &str, at: &String, state: &Arc<DaemonState>) -> Re
         name: path.to_string(),
     };
     place_file_in_memory(&state.file_system, path, new_file.clone());
+    append_log_entry(LogOp::Create(new_file.clone()), state);
 
     let connections: Vec<Arc<Connection>> = {
         let conns = state.connections.lock().unwrap();
