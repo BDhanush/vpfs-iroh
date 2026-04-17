@@ -399,8 +399,8 @@ async fn main() -> Result<()> {
         let mut conflict_stream = TcpStream::connect(&conflict_address).unwrap();
         println!("Connected to conflict resolution client");
 
+        //TODO: propagate conflict resolution to entire network
         check_conflicts(conflict_stream, &connection, &state).await;
-        // println!("built file system");
 
         establish_connections(&state).await;
 

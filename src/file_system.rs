@@ -21,7 +21,7 @@ use crate::state::DaemonState;
 use crate::remote_communication::*;
 
 /// Increment this node's entry in the clock and return a snapshot of the full clock.
-fn tick_and_snapshot(node: &str, vc: &mut HashMap<String, u64>) -> HashMap<String, u64> {
+fn tick_vector_clock(node: &str, vc: &mut HashMap<String, u64>) -> HashMap<String, u64> {
     *vc.entry(node.to_string()).or_insert(0) += 1;
     vc.clone()
 }
@@ -37,6 +37,16 @@ pub fn happens_before(a: &HashMap<String, u64>, b: &HashMap<String, u64>) -> boo
 /// Returns true if neither clock happens-before the other (and they differ).
 pub fn are_concurrent(a: &HashMap<String, u64>, b: &HashMap<String, u64>) -> bool {
     !happens_before(a, b) && !happens_before(b, a) && a != b
+}
+
+/// Returns a new clock that is the component-wise maximum of `a` and `b`.
+pub fn merge_clocks(a: &HashMap<String, u64>, b: &HashMap<String, u64>) -> HashMap<String, u64> {
+    let mut result = a.clone();
+    for (k, v) in b {
+        let cur = result.entry(k.clone()).or_insert(0);
+        if *v > *cur { *cur = *v; }
+    }
+    result
 }
 
 /// Extract the file path from any log operation.
@@ -69,7 +79,7 @@ pub fn partial_log_since(log: &[LogEntry], since: &HashMap<String, u64>) -> Vec<
 pub async fn append_log_entry(op: LogOp, state: &Arc<DaemonState>) {
     let clock_snapshot = {
         let mut vc = state.vector_clock.lock().unwrap();
-        tick_and_snapshot(&state.local.name, &mut vc)
+        tick_vector_clock(&state.local.name, &mut vc)
     };
     let entry = LogEntry { clock: clock_snapshot, node: state.local.name.clone(), op };
     {
@@ -218,6 +228,11 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, sta
     let mut send_remote: Vec<FileEntry> = Vec::new();
     let local_file_system = state.file_system.read().unwrap().clone();
 
+    // Track paths resolved via conflict resolution; all log entries for these paths are
+    // purged from both sides and replaced by a single resolution entry.
+    let mut resolved_paths: Vec<String> = Vec::new();
+    let mut resolve_msgs: Vec<(String, LogEntry)> = Vec::new();
+
     for (path, remote_entry) in &remote_last {
         let remote_file = entry_file(&remote_entry.op).clone();
 
@@ -230,6 +245,35 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, sta
                 send_message_tcp(&mut stream, ConflictResolutionRequest::Versions(to_send));
                 if let Ok(ConflictResolutionResponse::FinalVersion(final_entry)) = receive_message_tcp(&mut stream) {
                     println!("Resolved file {}: {:?}", path, final_entry);
+
+                    // Build a resolution log entry whose clock supersedes both sides
+                    let mut resolved_clock = merge_clocks(&local_entry.clock, &remote_entry.clock);
+                    *resolved_clock.entry(state.local.name.clone()).or_insert(0) += 1;
+                    let resolved_log_entry = LogEntry {
+                        clock: resolved_clock.clone(),
+                        node: state.local.name.clone(),
+                        op: LogOp::Modify(final_entry.clone()),
+                    };
+
+                    // Purge ALL local log entries referencing this path, then add the resolution
+                    {
+                        let path_clone = path.clone();
+                        let mut vc = state.vector_clock.lock().unwrap();
+                        let mut log = state.log.lock().unwrap();
+                        log.retain(|e| entry_path(&e.op) != path_clone);
+                        log.push(resolved_log_entry.clone());
+                        for (k, v) in &resolved_clock {
+                            let cur = vc.entry(k.clone()).or_insert(0);
+                            if *v > *cur { *cur = *v; }
+                        }
+                        save_log(&log);
+                    }
+
+                    // Skip any remote log entry for this path during the merge step below
+                    resolved_paths.push(path.clone());
+                    // Queue a ResolveConflict message so the remote mirrors this change
+                    resolve_msgs.push((path.clone(), resolved_log_entry));
+
                     if final_entry.uri != local_file.uri {
                         // Remote version won — update local file system and evict cache
                         state.file_system.write().unwrap().insert(path.clone(), final_entry);
@@ -240,7 +284,7 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, sta
                             *state.used_cache_bytes.write().unwrap() -= file_size as usize;
                         }
                     } else {
-                        // Local version won, remote needs to update
+                        // Local version won, remote needs to update its file system
                         send_remote.push(final_entry);
                     }
                 }
@@ -278,11 +322,18 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, sta
 
     save_file_system(&state.file_system.read().unwrap());
 
-    // Merge remote log entries into local
+    // Merge remote log entries into local, skipping any entry whose path was conflict-resolved
     {
         let mut vc = state.vector_clock.lock().unwrap();
         let mut log = state.log.lock().unwrap();
         for entry in &remote_entries {
+            let entry_p = entry_path(&entry.op);
+            if resolved_paths.iter().any(|p| p == &entry_p) {
+                continue; 
+            }
+            if log.contains(entry) {
+                continue;
+            }
             for (node, &val) in &entry.clock {
                 let cur = vc.entry(node.clone()).or_insert(0);
                 if val > *cur { *cur = val; }
@@ -302,6 +353,19 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, sta
         let _ = receive_message::<DaemonResponse>(&mut recv).await;
     } else {
         eprintln!("Error opening stream for UpdateLog");
+    }
+
+    // Inform remote about each conflict resolution: drop all entries for `path`, add the resolved one
+    for (path, add_entry) in &resolve_msgs {
+        if let Ok((mut send, mut recv)) = connection.open_bi().await {
+            send_message(&mut send, DaemonRequest::ResolveConflict(
+                path.clone(),
+                add_entry.clone(),
+            )).await;
+            let _ = receive_message::<DaemonResponse>(&mut recv).await;
+        } else {
+            eprintln!("Error opening stream for ResolveConflict");
+        }
     }
 
     // Send file entries for updates

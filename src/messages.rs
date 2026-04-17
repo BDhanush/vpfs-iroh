@@ -88,6 +88,8 @@ pub enum DaemonRequest {
     LogSince(HashMap<String, u64>),
     /// Push log entries to remote for merging
     UpdateLog(Vec<LogEntry>),
+    /// Tell remote to drop all log entries for `path` and adopt the resolved entry
+    ResolveConflict(String, LogEntry), // (path, resolved entry)
 }
 
 /// Responses to a daemon from a daemon for requests
@@ -109,6 +111,7 @@ pub enum DaemonResponse {
     /// Partial log entries + remote node's current vector clock
     Log(Vec<LogEntry>, HashMap<String, u64>),
     UpdateLog,
+    ResolveConflict,
 }
 
 /// Requests from client to daemon

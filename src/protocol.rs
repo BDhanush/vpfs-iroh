@@ -195,6 +195,7 @@ impl VPFSProtocol {
                         let mut vc = self.state.vector_clock.lock().unwrap();
                         let mut log = self.state.log.lock().unwrap();
                         for entry in entries {
+                            if log.contains(&entry) { continue; } // dedup
                             for (node, &val) in &entry.clock {
                                 let cur = vc.entry(node.clone()).or_insert(0);
                                 if val > *cur { *cur = val; }
@@ -204,6 +205,20 @@ impl VPFSProtocol {
                         save_log(&log);
                     }
                     send_message(&mut send, DaemonResponse::UpdateLog).await;
+                }
+                Ok(DaemonRequest::ResolveConflict(path, add)) => {
+                    {
+                        let mut vc = self.state.vector_clock.lock().unwrap();
+                        let mut log = self.state.log.lock().unwrap();
+                        log.retain(|e| entry_path(&e.op) != path);
+                        for (node, &val) in &add.clock {
+                            let cur = vc.entry(node.clone()).or_insert(0);
+                            if val > *cur { *cur = val; }
+                        }
+                        log.push(add);
+                        save_log(&log);
+                    }
+                    send_message(&mut send, DaemonResponse::ResolveConflict).await;
                 }
                 Ok(_) => eprintln!("Unexpected message from {remote_id}"),
                 Err(e) => eprintln!("Error receiving message from {remote_id}: {:?}", e),
