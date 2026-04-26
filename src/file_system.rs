@@ -255,13 +255,13 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, sta
                         op: LogOp::Modify(final_entry.clone()),
                     };
 
-                    // Purge ALL local log entries referencing this path, then add the resolution
+                    // Append the resolution entry (keep existing history, just avoid duplicates)
                     {
-                        let path_clone = path.clone();
                         let mut vc = state.vector_clock.lock().unwrap();
                         let mut log = state.log.lock().unwrap();
-                        log.retain(|e| entry_path(&e.op) != path_clone);
-                        log.push(resolved_log_entry.clone());
+                        if !log.contains(&resolved_log_entry) {
+                            log.push(resolved_log_entry.clone());
+                        }
                         for (k, v) in &resolved_clock {
                             let cur = vc.entry(k.clone()).or_insert(0);
                             if *v > *cur { *cur = *v; }

@@ -206,16 +206,17 @@ impl VPFSProtocol {
                     }
                     send_message(&mut send, DaemonResponse::UpdateLog).await;
                 }
-                Ok(DaemonRequest::ResolveConflict(path, add)) => {
+                Ok(DaemonRequest::ResolveConflict(_path, add)) => {
                     {
                         let mut vc = self.state.vector_clock.lock().unwrap();
                         let mut log = self.state.log.lock().unwrap();
-                        log.retain(|e| entry_path(&e.op) != path);
                         for (node, &val) in &add.clock {
                             let cur = vc.entry(node.clone()).or_insert(0);
                             if val > *cur { *cur = val; }
                         }
-                        log.push(add);
+                        if !log.contains(&add) {
+                            log.push(add);
+                        }
                         save_log(&log);
                     }
                     send_message(&mut send, DaemonResponse::ResolveConflict).await;
