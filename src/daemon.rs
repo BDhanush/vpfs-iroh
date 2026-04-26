@@ -390,6 +390,7 @@ async fn main() -> Result<()> {
         if new_node {
             build_file_system(&connection, &state).await;
         } else {
+            restore_vector_clock(&state);
             restore_file_system(&state);
             restore_log(&state);
         }
@@ -418,6 +419,7 @@ async fn main() -> Result<()> {
 
         let new_node = setup_files_dir();
         if !new_node {
+            restore_vector_clock(&state);
             restore_file_system(&state);
             restore_log(&state);
         }

@@ -79,7 +79,9 @@ pub fn partial_log_since(log: &[LogEntry], since: &HashMap<String, u64>) -> Vec<
 pub async fn append_log_entry(op: LogOp, state: &Arc<DaemonState>) {
     let clock_snapshot = {
         let mut vc = state.vector_clock.lock().unwrap();
-        tick_vector_clock(&state.local.name, &mut vc)
+        let snapshot = tick_vector_clock(&state.local.name, &mut vc);
+        save_vector_clock(&vc);
+        snapshot
     };
     let entry = LogEntry { clock: clock_snapshot, node: state.local.name.clone(), op };
     {
@@ -104,6 +106,23 @@ pub async fn append_log_entry(op: LogOp, state: &Arc<DaemonState>) {
 pub fn save_log(log: &[LogEntry]) {
     let log_file = fs::File::create("log").expect("Failed to create log file");
     serde_bare::to_writer(&log_file, log).expect("Failed to write log");
+}
+
+pub fn save_vector_clock(vc: &HashMap<String, u64>) {
+    let vc_file = fs::File::create("vector_clock").expect("Failed to create vector_clock file");
+    serde_bare::to_writer(&vc_file, vc).expect("Failed to write vector_clock");
+}
+
+pub fn restore_vector_clock(state: &Arc<DaemonState>) {
+    if let Ok(vc_file) = fs::File::open("vector_clock") {
+        if let Ok(saved_vc) = serde_bare::from_reader::<_, HashMap<String, u64>>(&vc_file) {
+            let mut vc = state.vector_clock.lock().unwrap();
+            for (node, val) in saved_vc {
+                let cur = vc.entry(node).or_insert(0);
+                if val > *cur { *cur = val; }
+            }
+        }
+    }
 }
 
 /// Restore the log
@@ -267,6 +286,7 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, sta
                             if *v > *cur { *cur = *v; }
                         }
                         save_log(&log);
+                        save_vector_clock(&vc);
                     }
 
                     // Skip any remote log entry for this path during the merge step below
@@ -329,7 +349,7 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, sta
         for entry in &remote_entries {
             let entry_p = entry_path(&entry.op);
             if resolved_paths.iter().any(|p| p == &entry_p) {
-                continue; 
+                continue;
             }
             if log.contains(entry) {
                 continue;
@@ -341,6 +361,7 @@ pub async fn check_conflicts(mut stream: TcpStream, connection: &Connection, sta
             log.push(entry.clone());
         }
         save_log(&log);
+        save_vector_clock(&vc);
     }
 
     // Push new partial log to remote

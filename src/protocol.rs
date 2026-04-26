@@ -203,6 +203,7 @@ impl VPFSProtocol {
                             log.push(entry);
                         }
                         save_log(&log);
+                        save_vector_clock(&vc);
                     }
                     send_message(&mut send, DaemonResponse::UpdateLog).await;
                 }
@@ -218,6 +219,7 @@ impl VPFSProtocol {
                             log.push(add);
                         }
                         save_log(&log);
+                        save_vector_clock(&vc);
                     }
                     send_message(&mut send, DaemonResponse::ResolveConflict).await;
                 }
