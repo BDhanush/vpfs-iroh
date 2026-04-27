@@ -71,7 +71,7 @@ impl Command {
                     Err(VPFSError::OnlyInCache(cache_file_entry)) => {
                         loop {
                             let mut buf = String::new();
-                            println!("File only available in cache. Write to cached version? (y or n)");
+                            println!("File owner currently unreachable. Any modification might result in conflicts. Continue (y or n)?");
                             io::stdin().read_line(&mut buf).unwrap();
                             match buf.trim() {
                                 "y" => {
