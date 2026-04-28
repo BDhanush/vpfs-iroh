@@ -57,7 +57,7 @@ impl Command {
                 }
             }
             Err(_) => {
-                println!("No longer able to right to file");
+                println!("Unable to read file");
             }
         }
     }
